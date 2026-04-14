@@ -25,9 +25,12 @@ struct FavouriteBusStopsView: View {
         List {
             if store.favourites(for: provider).isEmpty {
                 ContentUnavailableView {
-                    Label("No Favourite Stops", systemImage: "star.slash")
+                    Label(
+                        provider == .victorianTrainPTV ? "No Favourite Stations" : "No Favourite Stops",
+                        systemImage: "star.slash"
+                    )
                 } description: {
-                    Text("Tap the + button to browse the map and add bus stops.")
+                    Text("Tap the + button to browse the map and add \(provider == .victorianTrainPTV ? "train stations" : "bus stops").")
                 }
             } else {
                 ForEach(store.favourites(for: provider)) { stop in
@@ -46,7 +49,7 @@ struct FavouriteBusStopsView: View {
                 }
             }
         }
-        .navigationTitle("Favourite Stops")
+        .navigationTitle(provider == .victorianTrainPTV ? "Favourite Stations" : "Favourite Stops")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -108,7 +111,7 @@ struct BusStopMapView: View {
                     ForEach(visibleStops) { stop in
                         Marker(
                             stop.stopName,
-                            systemImage: store.contains(stopId: stop.stopId, provider: provider) ? "star.fill" : "bus.fill",
+                            systemImage: store.contains(stopId: stop.stopId, provider: provider) ? "star.fill" : (provider == .victorianTrainPTV ? "tram.fill" : "bus.fill"),
                             coordinate: stop.coordinate
                         )
                         .tint(store.contains(stopId: stop.stopId, provider: provider) ? .yellow : .blue)
@@ -138,10 +141,15 @@ struct BusStopMapView: View {
             }
 
             if !shouldShowPins {
-                ZoomInBanner()
+                Text("Zoom in to see \(provider == .victorianTrainPTV ? "train stations" : "bus stops")")
+                    .font(.subheadline.weight(.medium))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.top, 8)
             }
         }
-        .navigationTitle("Find Bus Stops")
+        .navigationTitle(provider == .victorianTrainPTV ? "Find Train Stations" : "Find Bus Stops")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             locationManager.requestWhenInUseAuthorization()
@@ -182,6 +190,12 @@ struct BusStopMapView: View {
                         minLon: minLon, maxLon: maxLon,
                         limit: 150
                     )
+                case .victorianTrainPTV:
+                    stops = try await VictorianTrainGTFSDatabase.shared.stopsInRegion(
+                        minLat: minLat, maxLat: maxLat,
+                        minLon: minLon, maxLon: maxLon,
+                        limit: 200
+                    )
                 }
                 guard !Task.isCancelled else { return }
                 visibleStops = stops.map { stop in
@@ -196,19 +210,6 @@ struct BusStopMapView: View {
                 // DB not ready — ignore
             }
         }
-    }
-}
-
-// MARK: - Zoom In Banner
-
-private struct ZoomInBanner: View {
-    var body: some View {
-        Text("Zoom in to see bus stops")
-            .font(.subheadline.weight(.medium))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.ultraThinMaterial, in: Capsule())
-            .padding(.top, 8)
     }
 }
 

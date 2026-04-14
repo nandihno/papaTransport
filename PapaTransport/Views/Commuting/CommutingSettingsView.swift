@@ -17,6 +17,11 @@ struct CommutingSettingsView: View {
     @State private var busSetupInProgress = false
     @State private var showResetConfirmation = false
 
+    @State private var trainDataReady = false
+    @State private var trainSetupMessage = ""
+    @State private var trainSetupInProgress = false
+    @State private var showTrainResetConfirmation = false
+
     private var transportRegion: TransportRegion {
         TransportRegion(rawValue: transportRegionRaw) ?? .victorian
     }
@@ -39,6 +44,10 @@ struct CommutingSettingsView: View {
                     victorianTrainSection
                 }
 
+                if transportRegion == .victorian {
+                    victorianTrainDataSection
+                }
+
                 transportBusSections
             }
             .navigationTitle("Settings")
@@ -50,9 +59,11 @@ struct CommutingSettingsView: View {
             }
             .task {
                 await refreshBusState()
+                await refreshTrainState()
             }
             .onChange(of: transportRegionRaw) { _, _ in
                 Task { await refreshBusState() }
+                Task { await refreshTrainState() }
             }
             .onChange(of: victorianShowBusCard) { _, _ in
                 Task { await refreshBusState() }
@@ -121,6 +132,87 @@ struct CommutingSettingsView: View {
                     .foregroundStyle(.orange)
             } else {
                 Text("Choose the line plus your home and city stations for the train card.")
+            }
+        }
+    }
+
+    private var victorianTrainDataSection: some View {
+        Section {
+            if trainDataReady {
+                NavigationLink {
+                    FavouriteBusStopsView(provider: .victorianTrainPTV)
+                } label: {
+                    HStack {
+                        Text("Favourite Stations")
+                        Spacer()
+                        Text("\(FavouriteBusStopStore.shared.count(for: .victorianTrainPTV))")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Label("Nearby stations within 2km are shown automatically on the Trains tab.", systemImage: "location.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Button(role: .destructive) {
+                    showTrainResetConfirmation = true
+                } label: {
+                    Label("Reinstall Bundled Train Data", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .confirmationDialog(
+                    "Reinstall bundled train data?",
+                    isPresented: $showTrainResetConfirmation,
+                    titleVisibility: .visible
+                ) {
+                    Button("Reinstall", role: .destructive) {
+                        Task { await reinstallTrainData() }
+                    }
+                } message: {
+                    Text("This clears the installed cached train database and reinstalls the bundled copy from the app package.")
+                }
+            } else {
+                trainSetupControls
+            }
+
+            if !trainSetupMessage.isEmpty {
+                Text(trainSetupMessage)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Victorian Train")
+        } footer: {
+            Text("The bundled Victorian train GTFS database powers nearby station departures. Live predictions use the same Transport Victoria realtime key configured below.")
+        }
+    }
+
+    @ViewBuilder
+    private var trainSetupControls: some View {
+        if trainSetupInProgress {
+            HStack(spacing: 12) {
+                ProgressView()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(progress.stage.isEmpty ? "Installing train data…" : progress.stage)
+                        .font(.subheadline)
+                    if !progress.detail.isEmpty {
+                        Text(progress.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Install the bundled Victorian train timetable database to enable the station map and departures.", systemImage: "shippingbox.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    Task { await installTrainData() }
+                } label: {
+                    Label("Install Bundled Train Data", systemImage: "shippingbox.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
             }
         }
     }
@@ -339,5 +431,45 @@ struct CommutingSettingsView: View {
             busSetupMessage = "Reinstall failed: \(error.localizedDescription)"
         }
         busSetupInProgress = false
+    }
+
+    // MARK: - Train Data
+
+    @MainActor
+    private func refreshTrainState() async {
+        guard transportRegion == .victorian else {
+            trainDataReady = false
+            trainSetupInProgress = false
+            trainSetupMessage = ""
+            return
+        }
+        trainDataReady = await VictorianTrainGTFSDatabase.shared.isDatabaseReady()
+    }
+
+    @MainActor
+    private func installTrainData() async {
+        trainSetupMessage = ""
+        trainSetupInProgress = true
+        do {
+            try await VictorianTrainGTFSDatabase.shared.ensureReady()
+            trainDataReady = true
+        } catch {
+            trainSetupMessage = "Install failed: \(error.localizedDescription)"
+        }
+        trainSetupInProgress = false
+    }
+
+    @MainActor
+    private func reinstallTrainData() async {
+        trainSetupMessage = ""
+        trainSetupInProgress = true
+        do {
+            try await VictorianTrainGTFSDatabase.shared.refreshDatabase()
+            trainDataReady = true
+            trainSetupMessage = "Bundled train data was reinstalled from the app package."
+        } catch {
+            trainSetupMessage = "Reinstall failed: \(error.localizedDescription)"
+        }
+        trainSetupInProgress = false
     }
 }

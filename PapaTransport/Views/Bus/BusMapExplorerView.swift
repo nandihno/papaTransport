@@ -5,6 +5,11 @@ import SwiftUI
 struct BusMapExplorerView: View {
     let provider: BusProvider
     let initialBusInfo: BusInfo?
+    let onOpenSettings: () -> Void
+    let onRefresh: () async -> Void
+    let statusMessage: String?
+    let progressStage: String?
+    let progressDetail: String?
 
     @Environment(\.themePalette) private var palette
 
@@ -20,9 +25,22 @@ struct BusMapExplorerView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
 
-    init(provider: BusProvider, initialBusInfo: BusInfo? = nil) {
+    init(
+        provider: BusProvider,
+        initialBusInfo: BusInfo? = nil,
+        onOpenSettings: @escaping () -> Void = {},
+        onRefresh: @escaping () async -> Void = {},
+        statusMessage: String? = nil,
+        progressStage: String? = nil,
+        progressDetail: String? = nil
+    ) {
         self.provider = provider
         self.initialBusInfo = initialBusInfo
+        self.onOpenSettings = onOpenSettings
+        self.onRefresh = onRefresh
+        self.statusMessage = statusMessage
+        self.progressStage = progressStage
+        self.progressDetail = progressDetail
         let seed = initialBusInfo ?? .placeholder(provider: provider)
         _nearbyBusInfo = State(initialValue: seed)
         _favouriteBusInfo = State(initialValue: seed)
@@ -38,26 +56,78 @@ struct BusMapExplorerView: View {
         return "\(count) \(stopLabel) within 300m"
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            mapCard
-            BusCard(
-                title: "Nearby Bus Stops",
-                busInfo: nearbyBusInfo,
-                selectedStopID: $selectedStopID,
-                showsNearby: true,
-                showsFavourites: false
-            )
+    private var screenTitle: String {
+        provider == .victorianTrainPTV ? "Trains" : "Bus"
+    }
 
-            if !favouriteBusInfo.favouriteStops.isEmpty {
-                BusCard(
-                    title: "Favourite Bus Stops",
-                    busInfo: favouriteBusInfo,
-                    showsNearby: false,
-                    showsFavourites: true
-                )
+    var body: some View {
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                ZStack(alignment: .top) {
+                    mapCard
+                        .ignoresSafeArea(edges: .top)
+
+                    LinearGradient(
+                        colors: [
+                            Color.black.opacity(0.34),
+                            Color.black.opacity(0.08),
+                            Color.clear
+                        ],
+                        startPoint: .top,
+                        endPoint: .center
+                    )
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+
+                    headerOverlay(topInset: proxy.safeAreaInsets.top)
+                }
+                .frame(height: max(320, proxy.size.height * 0.46))
+
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        if let statusMessage, !statusMessage.isEmpty {
+                            mapInfoBanner(
+                                title: statusMessage,
+                                detail: nil,
+                                icon: "clock.badge.checkmark"
+                            )
+                        }
+
+                        if let progressStage, !progressStage.isEmpty {
+                            mapInfoBanner(
+                                title: progressStage,
+                                detail: progressDetail,
+                                icon: "arrow.triangle.2.circlepath"
+                            )
+                        }
+
+                        BusCard(
+                            title: "Nearby Bus Stops",
+                            busInfo: nearbyBusInfo,
+                            selectedStopID: $selectedStopID,
+                            showsNearby: true,
+                            showsFavourites: false
+                        )
+
+                        if !favouriteBusInfo.favouriteStops.isEmpty {
+                            BusCard(
+                                title: "Favourite Bus Stops",
+                                busInfo: favouriteBusInfo,
+                                showsNearby: false,
+                                showsFavourites: true
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 0)
+                    .padding(.bottom, 24)
+                }
+                .refreshable {
+                    await refreshAll()
+                }
             }
         }
+        .background(Color.black)
         .task {
             await bootstrap()
         }
@@ -67,73 +137,122 @@ struct BusMapExplorerView: View {
     }
 
     private var mapCard: some View {
-        ZStack(alignment: .topLeading) {
-            Map(position: $cameraPosition, selection: $selectedStopID) {
-                UserAnnotation()
+        Map(position: $cameraPosition, selection: $selectedStopID) {
+            UserAnnotation()
 
-                if let searchCenter {
-                    MapCircle(center: searchCenter, radius: 300)
-                        .foregroundStyle(palette.accent.opacity(0.12))
-                        .stroke(palette.accentStrong.opacity(0.28), lineWidth: 1.5)
+            if let searchCenter {
+                MapCircle(center: searchCenter, radius: 300)
+                    .foregroundStyle(palette.accent.opacity(0.12))
+                    .stroke(palette.accentStrong.opacity(0.28), lineWidth: 1.5)
+            }
+
+            ForEach(nearbyBusInfo.nearbyStops) { stop in
+                Annotation(stop.stopName, coordinate: stop.coordinate, anchor: .bottom) {
+                    BusStopMapPin(
+                        stop: stop,
+                        isSelected: selectedStopID == stop.id,
+                        accentColor: palette.accent
+                    )
                 }
-
-                ForEach(nearbyBusInfo.nearbyStops) { stop in
-                    Annotation(stop.stopName, coordinate: stop.coordinate, anchor: .bottom) {
-                        BusStopMapPin(
-                            stop: stop,
-                            isSelected: selectedStopID == stop.id,
-                            accentColor: palette.accent
-                        )
-                    }
-                    .tag(stop.id)
-                }
+                .tag(stop.id)
             }
-            .mapStyle(.standard(elevation: .flat))
-            .mapControls {
-                MapUserLocationButton()
-                MapCompass()
-                MapScaleView()
-            }
-            .onMapCameraChange(frequency: .onEnd) { context in
-                let center = context.region.center
-                mapCenter = center
+        }
+        .mapStyle(.standard(elevation: .flat))
+        .mapControls {
+            MapCompass()
+            MapScaleView()
+        }
+        .onMapCameraChange(frequency: .onEnd) { context in
+            let center = context.region.center
+            mapCenter = center
 
-                guard hasBootstrapped else { return }
-                scheduleReload(around: center)
-            }
+            guard hasBootstrapped else { return }
+            scheduleReload(around: center)
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 8) {
+    @ViewBuilder
+    private func headerOverlay(topInset: CGFloat) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(screenTitle)
+                    .font(.transit(34, weight: .bold))
+                    .foregroundStyle(Color.white)
+
                 HStack(spacing: 8) {
                     Label(mapSummary, systemImage: "mappin.and.ellipse")
                         .font(.transit(12, weight: .bold))
-                        .foregroundStyle(palette.textPrimary)
+                        .foregroundStyle(Color.white.opacity(0.96))
 
                     if isLoading {
                         ProgressView()
-                            .scaleEffect(0.8)
+                            .scaleEffect(0.82)
+                            .tint(.white)
                     }
                 }
 
                 Text("Pan the map to refresh stops around the center point.")
                     .font(.transit(11, weight: .medium))
-                    .foregroundStyle(palette.textSecondary)
+                    .foregroundStyle(Color.white.opacity(0.82))
 
                 if let errorMessage, !errorMessage.isEmpty {
                     Text(errorMessage)
                         .font(.transit(11, weight: .medium))
-                        .foregroundStyle(AppTheme.warning)
+                        .foregroundStyle(Color.white.opacity(0.88))
                 }
             }
-            .padding(12)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .padding(12)
+
+            Spacer()
+
+            VStack(spacing: 16) {
+                overlayControlButton(systemName: "gearshape.fill", action: onOpenSettings)
+                overlayControlButton(systemName: "location.fill", action: recenterOnUser)
+            }
         }
-        .frame(height: 310)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(.top, max(topInset, 12))
+        .padding(.horizontal, 18)
+    }
+
+    @ViewBuilder
+    private func mapInfoBanner(title: String, detail: String?, icon: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(palette.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.transit(13, weight: .bold))
+                    .foregroundStyle(palette.textPrimary)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.transit(12, weight: .medium))
+                        .foregroundStyle(palette.textSecondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(palette.mutedPanelBackground)
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(palette.accentStrong.opacity(0.14), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(palette.accentStrong.opacity(0.18), lineWidth: 1)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func overlayControlButton(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(Color.white)
+                .frame(width: 56, height: 56)
+                .background(Color.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
     }
 
     private func bootstrap() async {
@@ -165,6 +284,29 @@ struct BusMapExplorerView: View {
             } else {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    private func recenterOnUser() {
+        guard let coordinate = userCoordinate else {
+            cameraPosition = .userLocation(fallback: .automatic)
+            return
+        }
+
+        cameraPosition = .region(
+            MKCoordinateRegion(
+                center: coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+            )
+        )
+    }
+
+    @MainActor
+    private func refreshAll() async {
+        await onRefresh()
+
+        if let coordinate = mapCenter ?? lastQueriedCenter ?? userCoordinate {
+            await reloadBoard(around: coordinate)
         }
     }
 
@@ -238,6 +380,8 @@ struct BusMapExplorerView: View {
             return BusService.shared
         case .victorianPTV:
             return VictorianBusService.shared
+        case .victorianTrainPTV:
+            return VictorianTrainMapService.shared
         }
     }
 
@@ -250,6 +394,11 @@ struct BusMapExplorerView: View {
             )
         case .victorianPTV:
             return try await VictorianBusService.shared.fetchFavouriteBusInfo(
+                referenceLatitude: latitude,
+                longitude: longitude
+            )
+        case .victorianTrainPTV:
+            return try await VictorianTrainMapService.shared.fetchFavouriteBusInfo(
                 referenceLatitude: latitude,
                 longitude: longitude
             )

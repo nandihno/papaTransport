@@ -80,6 +80,32 @@ struct CommutingView: View {
         transportRegion == .queensland ? .queenslandTransLink : .victorianPTV
     }
 
+    private var usesImmersiveMapLayout: Bool {
+        if selectedTab == 0 {
+            return shouldShowBusCard
+        }
+        return transportRegion == .victorian
+    }
+
+    private var busStatusMessage: String? {
+        switch loadState {
+        case .idle:
+            return nil
+        case .loading:
+            return "Loading nearby departures…"
+        case .loaded(let snapshot):
+            return "Last updated at \(snapshot.fetchedAt.formatted(date: .omitted, time: .shortened))"
+        }
+    }
+
+    private var gtfsProgressStage: String? {
+        progress.isActive ? progress.stage : nil
+    }
+
+    private var gtfsProgressDetail: String? {
+        progress.isActive && !progress.detail.isEmpty ? progress.detail : nil
+    }
+
     var body: some View {
         NavigationStack {
             TabView(selection: $selectedTab) {
@@ -98,13 +124,21 @@ struct CommutingView: View {
             .onChange(of: selectedTab) { _, _ in
                 fetchData()
             }
+            .onChange(of: showSettings) { _, isPresented in
+                if !isPresented {
+                    fetchData()
+                }
+            }
+            .toolbar(usesImmersiveMapLayout ? .hidden : .visible, for: .navigationBar)
             .navigationTitle(selectedTab == 0 ? "Bus" : "Trains")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showSettings = true } label: {
-                        Image(systemName: "gearshape.fill")
-                            .foregroundStyle(palette.accent)
+                if !usesImmersiveMapLayout {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showSettings = true } label: {
+                            Image(systemName: "gearshape.fill")
+                                .foregroundStyle(palette.accent)
+                        }
                     }
                 }
             }
@@ -119,47 +153,53 @@ struct CommutingView: View {
     // MARK: - Map Tab
 
     private var mapTab: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                statusBanner
-                gtfsProgressBanner
-
-                if shouldShowBusCard {
-                    BusMapExplorerView(
-                        provider: busProvider,
-                        initialBusInfo: loadState.snapshot?.busInfo
-                    )
-                    .redacted(reason: loadState.isLoaded ? [] : .placeholder)
-                    .opacity(loadState.isIdle ? 0.58 : 1)
-                    .animation(.spring(duration: 0.45), value: loadState.isLoaded)
-                } else {
-                    CommuteConfigurationCard()
+        Group {
+            if shouldShowBusCard {
+                BusMapExplorerView(
+                    provider: busProvider,
+                    initialBusInfo: loadState.snapshot?.busInfo,
+                    onOpenSettings: { showSettings = true },
+                    onRefresh: { await performFetch() },
+                    statusMessage: busStatusMessage,
+                    progressStage: gtfsProgressStage,
+                    progressDetail: gtfsProgressDetail
+                )
+                .redacted(reason: loadState.isLoaded ? [] : .placeholder)
+                .opacity(loadState.isIdle ? 0.58 : 1)
+                .animation(.spring(duration: 0.45), value: loadState.isLoaded)
+            } else {
+                ScrollView {
+                    VStack(spacing: 24) {
+                        statusBanner
+                        gtfsProgressBanner
+                        CommuteConfigurationCard()
+                    }
+                    .padding()
                 }
+                .refreshable { await performFetch() }
             }
-            .padding()
         }
-        .refreshable { await performFetch() }
     }
 
     // MARK: - Trains Tab
 
     private var trainsTab: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                if transportRegion == .victorian {
-                    statusBanner
-
-                    TrainCard(train: loadState.snapshot?.trainInfo ?? placeholderTrainInfo)
-                        .redacted(reason: loadState.isLoaded ? [] : .placeholder)
-                        .opacity(loadState.isIdle ? 0.58 : 1)
-                        .animation(.spring(duration: 0.45), value: loadState.isLoaded)
-                } else {
-                    TrainUnavailableCard()
+        Group {
+            if transportRegion == .victorian {
+                TrainMapExplorerView(
+                    trainInfo: loadState.snapshot?.trainInfo ?? placeholderTrainInfo,
+                    onOpenSettings: { showSettings = true },
+                    onRefresh: { await performFetch() }
+                )
+            } else {
+                ScrollView {
+                    VStack(spacing: 24) {
+                        TrainUnavailableCard()
+                    }
+                    .padding()
                 }
             }
-            .padding()
         }
-        .refreshable { await performFetch() }
     }
 
     @ViewBuilder

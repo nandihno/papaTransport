@@ -55,11 +55,33 @@ struct BusCard: View {
         selectedStopIDBinding != nil
     }
 
+    private var vehicleIconName: String {
+        busInfo.provider == .victorianTrainPTV ? "tram.fill" : "bus.fill"
+    }
+
+    private var nearbySubjectNoun: String {
+        busInfo.provider == .victorianTrainPTV ? "train stations" : "bus stops"
+    }
+
+    private var nearbySearchRadiusDescription: String {
+        busInfo.provider == .victorianTrainPTV ? "2km" : "300m"
+    }
+
+    private var emptyStateMessage: String {
+        if showsFavourites {
+            return busInfo.provider == .victorianTrainPTV
+                ? "No saved favourite train stations currently have departures."
+                : "No saved favourite bus stops currently have departures."
+        }
+
+        return "No \(nearbySubjectNoun) found within \(nearbySearchRadiusDescription) of the map center. Pan the map to search elsewhere."
+    }
+
     var body: some View {
         CardContainer {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Label(title, systemImage: "bus.fill")
+                    Label(title, systemImage: vehicleIconName)
                         .font(.transit(18, weight: .bold))
                         .foregroundStyle(palette.accent)
                     Spacer()
@@ -78,15 +100,13 @@ struct BusCard: View {
                 }
 
                 if !busInfo.locationAvailable {
-                    Label("Location unavailable. Enable Location Services to see nearby bus stops.",
+                    Label("Location unavailable. Enable Location Services to see nearby \(nearbySubjectNoun).",
                           systemImage: "location.slash.fill")
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.warning)
                 } else if displayedNearbyStops.isEmpty && displayedFavouriteStops.isEmpty {
                     Label(
-                        showsFavourites
-                            ? "No saved favourite bus stops currently have departures."
-                            : "No bus stops found within 300m of the map center. Pan the map to search elsewhere.",
+                        emptyStateMessage,
                         systemImage: "mappin.slash"
                     )
                     .font(.subheadline)
@@ -651,6 +671,8 @@ private struct BusTripDetailSheet: View {
             return BusService.shared
         case .victorianPTV:
             return VictorianBusService.shared
+        case .victorianTrainPTV:
+            return VictorianTrainMapService.shared
         }
     }
 }
