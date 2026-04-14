@@ -1,0 +1,2 @@
+# Ignore bundled transport databases.
+PapaTransport/db/
