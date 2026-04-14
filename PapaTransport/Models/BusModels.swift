@@ -71,6 +71,8 @@ struct NearbyBusStop: Identifiable {
     let id: String                    // stop_id
     let stopName: String
     let stopCode: String?
+    let latitude: Double
+    let longitude: Double
     let distanceMeters: Int
     let departures: [BusDeparture]
 }
@@ -218,6 +220,8 @@ extension BusInfo {
                     id: "placeholder-1",
                     stopName: "Nearby bus stop",
                     stopCode: "000",
+                    latitude: -27.4698,
+                    longitude: 153.0251,
                     distanceMeters: 120,
                     departures: (0..<3).map { i in
                         BusDeparture(

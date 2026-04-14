@@ -71,6 +71,8 @@ final class VictorianBusService: BusDataProviding {
                 id: stop.stopId,
                 stopName: stop.stopName,
                 stopCode: stop.stopCode,
+                latitude: stop.stopLat,
+                longitude: stop.stopLon,
                 distanceMeters: Int(distance),
                 departures: departures
             )
@@ -90,6 +92,8 @@ final class VictorianBusService: BusDataProviding {
                 id: favourite.stopId,
                 stopName: favourite.stopName,
                 stopCode: favourite.stopCode,
+                latitude: favourite.latitude,
+                longitude: favourite.longitude,
                 distanceMeters: distance,
                 departures: departures
             )
@@ -98,6 +102,65 @@ final class VictorianBusService: BusDataProviding {
         return BusInfo(
             provider: provider,
             nearbyStops: nearbyStops,
+            favouriteStops: favouriteStops,
+            alerts: [],
+            localTimeAtFetch: currentMelbourneTimeString(),
+            locationAvailable: true
+        )
+    }
+
+    func fetchFavouriteBusInfo(referenceLatitude latitude: Double, longitude: Double) async throws -> BusInfo {
+        try await VictorianBusGTFSDatabase.shared.ensureReady()
+
+        let favourites = await MainActor.run { FavouriteBusStopStore.shared.favourites(for: provider) }
+        let favouriteStopIds = favourites.map(\.stopId)
+        guard !favouriteStopIds.isEmpty else {
+            return BusInfo(
+                provider: provider,
+                nearbyStops: [],
+                favouriteStops: [],
+                alerts: [],
+                localTimeAtFetch: currentMelbourneTimeString(),
+                locationAvailable: true
+            )
+        }
+
+        let nowSeconds = VictorianBusGTFSDatabase.melbourneMidnightSeconds()
+        let scheduledDepartures = try await VictorianBusGTFSDatabase.shared.departures(
+            forStopIds: favouriteStopIds,
+            afterSeconds: nowSeconds,
+            limitPerStop: 15
+        )
+
+        let tripUpdates = await fetchTripUpdates()
+        let stopDepartureMap = buildDepartureBoard(
+            scheduled: scheduledDepartures,
+            tripUpdates: tripUpdates,
+            nowSeconds: nowSeconds
+        )
+
+        let userLocation = CLLocation(latitude: latitude, longitude: longitude)
+        let favouriteStops: [NearbyBusStop] = favourites.compactMap { favourite in
+            let departures = stopDepartureMap[favourite.stopId] ?? []
+            guard !departures.isEmpty else { return nil }
+
+            let stopLocation = CLLocation(latitude: favourite.latitude, longitude: favourite.longitude)
+            let distance = Int(userLocation.distance(from: stopLocation))
+
+            return NearbyBusStop(
+                id: favourite.stopId,
+                stopName: favourite.stopName,
+                stopCode: favourite.stopCode,
+                latitude: favourite.latitude,
+                longitude: favourite.longitude,
+                distanceMeters: distance,
+                departures: departures
+            )
+        }
+
+        return BusInfo(
+            provider: provider,
+            nearbyStops: [],
             favouriteStops: favouriteStops,
             alerts: [],
             localTimeAtFetch: currentMelbourneTimeString(),

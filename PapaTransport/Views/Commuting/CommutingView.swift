@@ -38,6 +38,7 @@ struct CommutingView: View {
     @ObservedObject private var progress = GTFSDownloadProgress.shared
     @State private var loadState: CommutingLoadState = .idle
     @State private var showSettings = false
+    @State private var selectedTab = 0
 
     private var transportRegion: TransportRegion {
         TransportRegion(rawValue: transportRegionRaw) ?? .victorian
@@ -75,19 +76,29 @@ struct CommutingView: View {
         )
     }
 
+    private var busProvider: BusProvider {
+        transportRegion == .queensland ? .queenslandTransLink : .victorianPTV
+    }
+
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    fetchButton
-                    statusBanner
-                    gtfsProgressBanner
-                    cardsStack
-                }
-                .padding()
+            TabView(selection: $selectedTab) {
+                mapTab
+                    .tag(0)
+                    .tabItem {
+                        Label("Bus", systemImage: "bus.fill")
+                    }
+
+                trainsTab
+                    .tag(1)
+                    .tabItem {
+                        Label("Trains", systemImage: "tram.fill")
+                    }
             }
-            .refreshable { await performFetch() }
-            .navigationTitle("Commuting")
+            .onChange(of: selectedTab) { _, _ in
+                fetchData()
+            }
+            .navigationTitle(selectedTab == 0 ? "Bus" : "Trains")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -102,43 +113,71 @@ struct CommutingView: View {
             }
         }
         .screenTheme(AppTheme.transport)
+        .task { await performFetch() }
     }
 
-    private var fetchButton: some View {
-        Button(action: fetchData) {
-            HStack(spacing: 8) {
-                if loadState.isLoading {
-                    ProgressView()
-                        .tint(Color.black.opacity(0.82))
-                        .scaleEffect(0.85)
+    // MARK: - Map Tab
+
+    private var mapTab: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                statusBanner
+                gtfsProgressBanner
+
+                if shouldShowBusCard {
+                    BusMapExplorerView(
+                        provider: busProvider,
+                        initialBusInfo: loadState.snapshot?.busInfo
+                    )
+                    .redacted(reason: loadState.isLoaded ? [] : .placeholder)
+                    .opacity(loadState.isIdle ? 0.58 : 1)
+                    .animation(.spring(duration: 0.45), value: loadState.isLoaded)
                 } else {
-                    Image(systemName: "arrow.clockwise")
+                    CommuteConfigurationCard()
                 }
-                Text(loadState.isLoading ? "Fetching…" : "Fetch commuting")
             }
+            .padding()
         }
-        .buttonStyle(TransitPrimaryButtonStyle())
-        .disabled(loadState.isLoading)
-        .opacity(loadState.isLoading ? 0.84 : 1)
-        .animation(.easeInOut(duration: 0.2), value: loadState.isLoading)
+        .refreshable { await performFetch() }
+    }
+
+    // MARK: - Trains Tab
+
+    private var trainsTab: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                if transportRegion == .victorian {
+                    statusBanner
+
+                    TrainCard(train: loadState.snapshot?.trainInfo ?? placeholderTrainInfo)
+                        .redacted(reason: loadState.isLoaded ? [] : .placeholder)
+                        .opacity(loadState.isIdle ? 0.58 : 1)
+                        .animation(.spring(duration: 0.45), value: loadState.isLoaded)
+                } else {
+                    TrainUnavailableCard()
+                }
+            }
+            .padding()
+        }
+        .refreshable { await performFetch() }
     }
 
     @ViewBuilder
     private var statusBanner: some View {
         switch loadState {
         case .idle:
-            Label {
-                Text("Tap **Fetch commuting** to load train and bus departures.")
-            } icon: {
-                Image(systemName: "hand.tap")
+            EmptyView()
+
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .scaleEffect(0.85)
+                Text("Loading…")
             }
             .font(.transit(13, weight: .medium))
             .foregroundStyle(palette.textSecondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 2)
-
-        case .loading:
-            EmptyView()
 
         case .loaded(let snapshot):
             HStack(spacing: 4) {
@@ -181,25 +220,6 @@ struct CommutingView: View {
         }
     }
 
-    private var cardsStack: some View {
-        VStack(spacing: 20) {
-            if shouldShowTrainCard {
-                TrainCard(train: loadState.snapshot?.trainInfo ?? placeholderTrainInfo)
-            }
-
-            if shouldShowBusCard {
-                BusCard(busInfo: loadState.snapshot?.busInfo ?? placeholderBusInfo)
-            }
-
-            if !shouldShowTrainCard && !shouldShowBusCard {
-                CommuteConfigurationCard()
-            }
-        }
-        .redacted(reason: loadState.isLoaded ? [] : .placeholder)
-        .opacity(loadState.isIdle ? 0.58 : 1)
-        .animation(.spring(duration: 0.45), value: loadState.isLoaded)
-    }
-
     private func fetchData() {
         Task { await performFetch() }
     }
@@ -219,7 +239,7 @@ struct CommutingView: View {
             homeStation: homeStation,
             cityStation: cityStation,
             transportRegion: transportRegion,
-            includeTrain: shouldShowTrainCard,
+            includeTrain: transportRegion == .victorian,
             includeBus: shouldShowBusCard
         )
 
@@ -250,6 +270,28 @@ private struct CommuteConfigurationCard: View {
                     .foregroundStyle(palette.textPrimary)
 
                 Text("Open Settings to choose which transport cards should appear.")
+                    .font(.transit(12, weight: .medium))
+                    .foregroundStyle(palette.textSecondary)
+            }
+        }
+    }
+}
+
+private struct TrainUnavailableCard: View {
+    @Environment(\.themePalette) private var palette
+
+    var body: some View {
+        CardContainer {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Trains", systemImage: "tram.fill")
+                    .font(.transit(18, weight: .bold))
+                    .foregroundStyle(palette.accent)
+
+                Text("Train information is not yet available for Queensland.")
+                    .font(.transit(14, weight: .medium))
+                    .foregroundStyle(palette.textPrimary)
+
+                Text("Switch to Victoria in Settings to access Melbourne train departures and service status.")
                     .font(.transit(12, weight: .medium))
                     .foregroundStyle(palette.textSecondary)
             }

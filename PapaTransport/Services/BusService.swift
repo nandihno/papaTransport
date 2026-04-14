@@ -91,6 +91,8 @@ final class BusService: BusDataProviding {
                 id: stop.stopId,
                 stopName: stop.stopName,
                 stopCode: stop.stopCode,
+                latitude: stop.stopLat,
+                longitude: stop.stopLon,
                 distanceMeters: Int(distance),
                 departures: departures
             )
@@ -113,6 +115,8 @@ final class BusService: BusDataProviding {
                 id: fav.stopId,
                 stopName: fav.stopName,
                 stopCode: fav.stopCode,
+                latitude: fav.latitude,
+                longitude: fav.longitude,
                 distanceMeters: dist,
                 departures: departures
             )
@@ -126,6 +130,73 @@ final class BusService: BusDataProviding {
         return BusInfo(
             provider: provider,
             nearbyStops: nearbyStops,
+            favouriteStops: favouriteStops,
+            alerts: filteredAlerts,
+            localTimeAtFetch: currentBrisbaneTimeString(),
+            locationAvailable: true
+        )
+    }
+
+    func fetchFavouriteBusInfo(referenceLatitude latitude: Double, longitude: Double) async throws -> BusInfo {
+        try await GTFSDatabase.shared.ensureReady()
+
+        let favourites = await MainActor.run { FavouriteBusStopStore.shared.favourites(for: provider) }
+        let favouriteStopIds = favourites.map(\.stopId)
+        guard !favouriteStopIds.isEmpty else {
+            return BusInfo(
+                provider: provider,
+                nearbyStops: [],
+                favouriteStops: [],
+                alerts: [],
+                localTimeAtFetch: currentBrisbaneTimeString(),
+                locationAvailable: true
+            )
+        }
+
+        let nowSeconds = GTFSDatabase.brisbaneMidnightSeconds()
+        let scheduledDepartures = try await GTFSDatabase.shared.departures(
+            forStopIds: favouriteStopIds,
+            afterSeconds: nowSeconds,
+            limitPerStop: 15
+        )
+
+        async let tripUpdatesTask = fetchTripUpdates()
+        async let alertsTask = fetchAlerts()
+
+        let tripUpdates = await tripUpdatesTask
+        let rawAlerts = await alertsTask
+
+        let stopDepartureMap = buildDepartureBoard(
+            scheduled: scheduledDepartures,
+            tripUpdates: tripUpdates,
+            nowSeconds: nowSeconds
+        )
+
+        let userLocation = CLLocation(latitude: latitude, longitude: longitude)
+        let favouriteStops: [NearbyBusStop] = favourites.compactMap { favourite in
+            let departures = stopDepartureMap[favourite.stopId] ?? []
+            guard !departures.isEmpty else { return nil }
+
+            let stopLocation = CLLocation(latitude: favourite.latitude, longitude: favourite.longitude)
+            let distance = Int(userLocation.distance(from: stopLocation))
+
+            return NearbyBusStop(
+                id: favourite.stopId,
+                stopName: favourite.stopName,
+                stopCode: favourite.stopCode,
+                latitude: favourite.latitude,
+                longitude: favourite.longitude,
+                distanceMeters: distance,
+                departures: departures
+            )
+        }
+
+        let relevantRouteIds = Set(scheduledDepartures.map(\.routeId))
+        let filteredAlerts = filterAlerts(rawAlerts, stopIds: Set(favouriteStopIds), routeIds: relevantRouteIds)
+
+        return BusInfo(
+            provider: provider,
+            nearbyStops: [],
             favouriteStops: favouriteStops,
             alerts: filteredAlerts,
             localTimeAtFetch: currentBrisbaneTimeString(),

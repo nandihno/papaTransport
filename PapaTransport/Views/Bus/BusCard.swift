@@ -9,16 +9,57 @@ import MapKit
 // MARK: - Bus Card
 
 struct BusCard: View {
+    let title: String
     let busInfo: BusInfo
+    let showsNearby: Bool
+    let showsFavourites: Bool
+
+    private let selectedStopIDBinding: Binding<String?>?
+
     @Environment(\.themePalette) private var palette
     @State private var selectedTripRequest: BusTripRequest?
+    @State private var localSelectedStopID: String?
+    @State private var expandedStopIDs: Set<String> = []
+
+    init(
+        title: String = "Bus Departures",
+        busInfo: BusInfo,
+        selectedStopID: Binding<String?>? = nil,
+        showsNearby: Bool = true,
+        showsFavourites: Bool = true
+    ) {
+        self.title = title
+        self.busInfo = busInfo
+        self.selectedStopIDBinding = selectedStopID
+        self.showsNearby = showsNearby
+        self.showsFavourites = showsFavourites
+    }
+
+    private var selectedStopID: String? {
+        selectedStopIDBinding?.wrappedValue ?? localSelectedStopID
+    }
+
+    private var allDisplayedStopIDs: [String] {
+        displayedNearbyStops.map(\.id) + displayedFavouriteStops.map(\.id)
+    }
+
+    private var displayedNearbyStops: [NearbyBusStop] {
+        showsNearby ? busInfo.nearbyStops : []
+    }
+
+    private var displayedFavouriteStops: [NearbyBusStop] {
+        showsFavourites ? busInfo.favouriteStops : []
+    }
+
+    private var isExternallyControlled: Bool {
+        selectedStopIDBinding != nil
+    }
 
     var body: some View {
         CardContainer {
             VStack(alignment: .leading, spacing: 12) {
-                // Header
                 HStack {
-                    Label("Bus Departures", systemImage: "bus.fill")
+                    Label(title, systemImage: "bus.fill")
                         .font(.transit(18, weight: .bold))
                         .foregroundStyle(palette.accent)
                     Spacer()
@@ -41,27 +82,37 @@ struct BusCard: View {
                           systemImage: "location.slash.fill")
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.warning)
-                } else if busInfo.nearbyStops.isEmpty && busInfo.favouriteStops.isEmpty {
-                    Label("No bus stops found within 300m. Add favourite stops in Settings.",
-                          systemImage: "mappin.slash")
-                        .font(.subheadline)
-                        .foregroundStyle(palette.textSecondary)
+                } else if displayedNearbyStops.isEmpty && displayedFavouriteStops.isEmpty {
+                    Label(
+                        showsFavourites
+                            ? "No saved favourite bus stops currently have departures."
+                            : "No bus stops found within 300m of the map center. Pan the map to search elsewhere.",
+                        systemImage: "mappin.slash"
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(palette.textSecondary)
                 } else {
-                    // Alerts
                     ForEach(busInfo.alerts) { alert in
                         BusAlertRow(alert: alert)
                     }
 
-                    // Nearby stops with departures
-                    if !busInfo.nearbyStops.isEmpty {
+                    if !displayedNearbyStops.isEmpty {
                         Label("Nearby", systemImage: "location.fill")
                             .font(.caption.bold())
                             .foregroundStyle(palette.textSecondary)
                             .padding(.top, 4)
-                        ForEach(busInfo.nearbyStops) { stop in
+                        ForEach(displayedNearbyStops) { stop in
                             BusStopSection(
                                 stop: stop,
-                                isTripDetailEnabled: true
+                                isTripDetailEnabled: true,
+                                isSelected: selectedStopID == stop.id,
+                                isExpanded: expandedStopIDs.contains(stop.id),
+                                onToggleExpanded: {
+                                    toggleExpansion(for: stop.id)
+                                },
+                                onSelectStop: {
+                                    setSelectedStopID(stop.id)
+                                }
                             ) { departure in
                                 selectedTripRequest = BusTripRequest(
                                     provider: busInfo.provider,
@@ -72,19 +123,26 @@ struct BusCard: View {
                         }
                     }
 
-                    // Favourite stops
-                    if !busInfo.favouriteStops.isEmpty {
-                        if !busInfo.nearbyStops.isEmpty {
+                    if !displayedFavouriteStops.isEmpty {
+                        if !displayedNearbyStops.isEmpty {
                             Divider()
                                 .padding(.vertical, 4)
                         }
                         Label("Favourites", systemImage: "star.fill")
                             .font(.caption.bold())
                             .foregroundStyle(palette.accent)
-                        ForEach(busInfo.favouriteStops) { stop in
+                        ForEach(displayedFavouriteStops) { stop in
                             BusStopSection(
                                 stop: stop,
-                                isTripDetailEnabled: true
+                                isTripDetailEnabled: true,
+                                isSelected: selectedStopID == stop.id,
+                                isExpanded: expandedStopIDs.contains(stop.id),
+                                onToggleExpanded: {
+                                    toggleExpansion(for: stop.id)
+                                },
+                                onSelectStop: {
+                                    setSelectedStopID(stop.id)
+                                }
                             ) { departure in
                                 selectedTripRequest = BusTripRequest(
                                     provider: busInfo.provider,
@@ -97,10 +155,64 @@ struct BusCard: View {
                 }
             }
         }
+        .onAppear {
+            synchronizeSelectionWithCurrentStops()
+        }
+        .onChange(of: selectedStopID) { _, newValue in
+            guard let newValue else { return }
+            expandedStopIDs.insert(newValue)
+        }
+        .onChange(of: allDisplayedStopIDs) { _, _ in
+            synchronizeSelectionWithCurrentStops()
+        }
         .sheet(item: $selectedTripRequest) { request in
             BusTripDetailSheet(request: request)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+        }
+    }
+
+    private func setSelectedStopID(_ stopID: String?) {
+        if let selectedStopIDBinding {
+            selectedStopIDBinding.wrappedValue = stopID
+        } else {
+            localSelectedStopID = stopID
+        }
+    }
+
+    private func toggleExpansion(for stopID: String) {
+        if expandedStopIDs.contains(stopID) {
+            expandedStopIDs.remove(stopID)
+        } else {
+            expandedStopIDs.insert(stopID)
+        }
+    }
+
+    private func synchronizeSelectionWithCurrentStops() {
+        let validStopIDs = Set(allDisplayedStopIDs)
+
+        expandedStopIDs = expandedStopIDs.intersection(validStopIDs)
+
+        if let selectedStopID, validStopIDs.contains(selectedStopID) {
+            expandedStopIDs.insert(selectedStopID)
+            return
+        }
+
+        if isExternallyControlled {
+            if selectedStopID != nil {
+                setSelectedStopID(nil)
+            }
+            return
+        }
+
+        if let firstNearbyStopID = displayedNearbyStops.first?.id {
+            setSelectedStopID(firstNearbyStopID)
+            expandedStopIDs.insert(firstNearbyStopID)
+        } else if let firstFavouriteStopID = displayedFavouriteStops.first?.id {
+            setSelectedStopID(firstFavouriteStopID)
+            expandedStopIDs.insert(firstFavouriteStopID)
+        } else {
+            setSelectedStopID(nil)
         }
     }
 }
@@ -160,16 +272,22 @@ struct BusAlertRow: View {
 struct BusStopSection: View {
     let stop: NearbyBusStop
     let isTripDetailEnabled: Bool
+    let isSelected: Bool
+    let isExpanded: Bool
+    let onToggleExpanded: () -> Void
+    let onSelectStop: () -> Void
     let onSelectDeparture: (BusDeparture) -> Void
 
     @Environment(\.themePalette) private var palette
-    @State private var isExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Stop header — tappable to collapse/expand
             Button {
-                withAnimation(.easeInOut(duration: 0.25)) { isExpanded.toggle() }
+                onSelectStop()
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    onToggleExpanded()
+                }
             } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -185,10 +303,10 @@ struct BusStopSection: View {
                     Spacer()
                     Text("\(stop.distanceMeters)m away")
                         .font(.transit(12, weight: .bold))
-                        .foregroundStyle(palette.textSecondary)
+                        .foregroundStyle(isSelected ? palette.buttonForeground : palette.textSecondary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
-                        .background(palette.surfaceRaised)
+                        .background(isSelected ? palette.accent : palette.surfaceRaised)
                         .clipShape(Capsule())
                     Image(systemName: "chevron.right")
                         .font(.caption.bold())
@@ -212,6 +330,16 @@ struct BusStopSection: View {
                 }
             }
         }
+        .padding(12)
+        .background(isSelected ? palette.surfaceRaised.opacity(0.92) : Color.clear)
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(
+                    isSelected ? palette.accentStrong.opacity(0.36) : palette.textTertiary.opacity(0.08),
+                    lineWidth: 1
+                )
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
