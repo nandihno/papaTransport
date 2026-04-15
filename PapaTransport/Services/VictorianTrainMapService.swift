@@ -3,10 +3,10 @@ import Foundation
 
 final class VictorianTrainMapService: BusDataProviding {
     static let shared = VictorianTrainMapService()
+    static let departureWindowSeconds = 2 * 60 * 60
+    static let departureWindowDescription = "next 2 hours"
 
     private init() {}
-
-    private let departuresPerStationLimit = 30
 
     let provider: BusProvider = .victorianTrainPTV
 
@@ -87,10 +87,11 @@ final class VictorianTrainMapService: BusDataProviding {
         let allFavouriteStopIds = Array(Set(favouriteSiblingMap.values.flatMap(\.self)))
 
         let nowSeconds = VictorianTrainGTFSDatabase.melbourneMidnightSeconds()
+        let cutoffSeconds = nowSeconds + Self.departureWindowSeconds
         let scheduledDepartures = try await VictorianTrainGTFSDatabase.shared.departures(
             forStopIds: allFavouriteStopIds,
             afterSeconds: nowSeconds,
-            limitPerStop: departuresPerStationLimit
+            untilSeconds: cutoffSeconds
         )
 
         let tripUpdates = await fetchTripUpdates()
@@ -103,8 +104,11 @@ final class VictorianTrainMapService: BusDataProviding {
         let userLocation = CLLocation(latitude: latitude, longitude: longitude)
         let favouriteStops: [NearbyBusStop] = favourites.compactMap { favourite in
             let siblings = favouriteSiblingMap[favourite.stopId] ?? [favourite.stopId]
-            let departures = siblings.flatMap { stopDepartureMap[$0] ?? [] }
-                .sorted { $0.scheduledSeconds < $1.scheduledSeconds }
+            let departures = departuresWithinWindow(
+                siblings.flatMap { stopDepartureMap[$0] ?? [] },
+                from: nowSeconds,
+                through: cutoffSeconds
+            )
             guard !departures.isEmpty else { return nil }
 
             let stopLocation = CLLocation(latitude: favourite.latitude, longitude: favourite.longitude)
@@ -117,7 +121,7 @@ final class VictorianTrainMapService: BusDataProviding {
                 latitude: favourite.latitude,
                 longitude: favourite.longitude,
                 distanceMeters: distance,
-                departures: Array(departures.prefix(departuresPerStationLimit))
+                departures: departures
             )
         }
 
@@ -356,6 +360,7 @@ final class VictorianTrainMapService: BusDataProviding {
         let allStopIds = Array(Set(allNearbyStopIds + allFavouriteStopIds))
 
         let nowSeconds = VictorianTrainGTFSDatabase.melbourneMidnightSeconds()
+        let cutoffSeconds = nowSeconds + Self.departureWindowSeconds
         let scheduledDepartures: [VictorianTrainGTFSDatabase.ScheduledDeparture]
         if allStopIds.isEmpty {
             scheduledDepartures = []
@@ -363,7 +368,7 @@ final class VictorianTrainMapService: BusDataProviding {
             scheduledDepartures = try await VictorianTrainGTFSDatabase.shared.departures(
                 forStopIds: allStopIds,
                 afterSeconds: nowSeconds,
-                limitPerStop: departuresPerStationLimit
+                untilSeconds: cutoffSeconds
             )
         }
 
@@ -376,8 +381,11 @@ final class VictorianTrainMapService: BusDataProviding {
 
         let nearbyStops: [NearbyBusStop] = nearbyRaw.compactMap { stop, distance in
             let siblings = nearbySiblingMap[stop.stopId] ?? [stop.stopId]
-            let departures = siblings.flatMap { stopDepartureMap[$0] ?? [] }
-                .sorted { $0.scheduledSeconds < $1.scheduledSeconds }
+            let departures = departuresWithinWindow(
+                siblings.flatMap { stopDepartureMap[$0] ?? [] },
+                from: nowSeconds,
+                through: cutoffSeconds
+            )
             guard !departures.isEmpty else { return nil }
             return NearbyBusStop(
                 id: stop.stopId,
@@ -386,7 +394,7 @@ final class VictorianTrainMapService: BusDataProviding {
                 latitude: stop.stopLat,
                 longitude: stop.stopLon,
                 distanceMeters: Int(distance),
-                departures: Array(departures.prefix(departuresPerStationLimit))
+                departures: departures
             )
         }
 
@@ -397,8 +405,11 @@ final class VictorianTrainMapService: BusDataProviding {
             favouriteStops = favourites.compactMap { favourite in
                 guard !nearbyStopIdSet.contains(favourite.stopId) else { return nil }
                 let siblings = favouriteSiblingMap[favourite.stopId] ?? [favourite.stopId]
-                let departures = siblings.flatMap { stopDepartureMap[$0] ?? [] }
-                    .sorted { $0.scheduledSeconds < $1.scheduledSeconds }
+                let departures = departuresWithinWindow(
+                    siblings.flatMap { stopDepartureMap[$0] ?? [] },
+                    from: nowSeconds,
+                    through: cutoffSeconds
+                )
                 guard !departures.isEmpty else { return nil }
 
                 let stopLocation = CLLocation(latitude: favourite.latitude, longitude: favourite.longitude)
@@ -411,7 +422,7 @@ final class VictorianTrainMapService: BusDataProviding {
                     latitude: favourite.latitude,
                     longitude: favourite.longitude,
                     distanceMeters: distance,
-                    departures: Array(departures.prefix(departuresPerStationLimit))
+                    departures: departures
                 )
             }
         } else {
@@ -434,6 +445,18 @@ final class VictorianTrainMapService: BusDataProviding {
             result[stopId] = try await VictorianTrainGTFSDatabase.shared.siblingStopIds(for: stopId)
         }
         return result
+    }
+
+    private func departuresWithinWindow(
+        _ departures: [BusDeparture],
+        from nowSeconds: Int,
+        through cutoffSeconds: Int
+    ) -> [BusDeparture] {
+        departures
+            .filter { departure in
+                departure.scheduledSeconds >= nowSeconds && departure.scheduledSeconds <= cutoffSeconds
+            }
+            .sorted { $0.scheduledSeconds < $1.scheduledSeconds }
     }
 
     private func statusForDelay(_ delaySeconds: Int) -> BusDepartureStatus {

@@ -166,6 +166,18 @@ extension Font {
     }
 }
 
+extension Int {
+    /// Returns a display-friendly duration tuple.
+    /// < 60 min  →  ("23", "min")
+    /// ≥ 60 min  →  ("1h", "30m")  or  ("2h", "") for exact hours
+    var durationComponents: (value: String, unit: String) {
+        guard self >= 60 else { return ("\(self)", "min") }
+        let hours = self / 60
+        let remaining = self % 60
+        return remaining == 0 ? ("\(hours)h", "") : ("\(hours)h", "\(remaining)m")
+    }
+}
+
 struct TransitPrimaryButtonStyle: ButtonStyle {
     @Environment(\.themePalette) private var palette
 

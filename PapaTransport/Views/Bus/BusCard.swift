@@ -89,7 +89,7 @@ struct BusCard: View {
                     .foregroundStyle(palette.textSecondary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(Color.white.opacity(0.08), in: Capsule())
+                    .background(palette.surfaceRaised, in: Capsule())
             }
 
             if busInfo.locationAvailable {
@@ -145,7 +145,6 @@ struct BusCard: View {
                 if !displayedFavouriteStops.isEmpty {
                     if !displayedNearbyStops.isEmpty {
                         Divider()
-                            .overlay(Color.white.opacity(0.08))
                             .padding(.vertical, 4)
                     }
                     Label("Favourites", systemImage: "star.fill")
@@ -178,7 +177,7 @@ struct BusCard: View {
         .background {
             ZStack(alignment: .top) {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(palette.surfaceRaised.opacity(0.10))
+                    .fill(palette.cardBackground)
 
                 // Thin accent gradient bar along top edge
                 LinearGradient(
@@ -456,12 +455,15 @@ struct BusDepartureRow: View {
             // Minutes away + status badge
             VStack(alignment: .trailing, spacing: 4) {
                 HStack(alignment: .lastTextBaseline, spacing: 3) {
-                    Text("\(departure.minutesAway)")
+                    let duration = departure.minutesAway.durationComponents
+                    Text(duration.value)
                         .font(.transit(22, weight: .heavy).monospacedDigit())
                         .foregroundStyle(palette.textPrimary)
-                    Text("min")
-                        .font(.transit(11, weight: .bold))
-                        .foregroundStyle(palette.textSecondary)
+                    if !duration.unit.isEmpty {
+                        Text(duration.unit)
+                            .font(.transit(11, weight: .bold))
+                            .foregroundStyle(palette.textSecondary)
+                    }
                 }
 
                 Text(departure.status.rawValue)

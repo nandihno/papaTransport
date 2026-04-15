@@ -271,7 +271,7 @@ actor VictorianTrainGTFSDatabase {
     func departures(
         forStopIds stopIds: [String],
         afterSeconds: Int,
-        limitPerStop: Int = 15
+        untilSeconds: Int? = nil
     ) throws -> [ScheduledDeparture] {
         guard let db else { throw GTFSDBError.notReady }
         guard !stopIds.isEmpty else { return [] }
@@ -281,6 +281,7 @@ actor VictorianTrainGTFSDatabase {
 
         let stopPlaceholders = stopIds.map { _ in "?" }.joined(separator: ",")
         let servicePlaceholders = activeServiceIds.map { _ in "?" }.joined(separator: ",")
+        let untilClause = untilSeconds != nil ? "AND st.departure_seconds <= ?" : ""
         let sql = """
             SELECT st.trip_id, st.stop_id, st.departure_time, st.departure_seconds, st.stop_sequence,
                    t.route_id, t.trip_headsign, t.direction_id,
@@ -293,9 +294,9 @@ actor VictorianTrainGTFSDatabase {
             WHERE st.stop_id IN (\(stopPlaceholders))
               AND t.service_id IN (\(servicePlaceholders))
               AND st.departure_seconds >= ?
+              \(untilClause)
               AND r.route_type IN (2, 400)
             ORDER BY st.departure_seconds ASC
-            LIMIT ?
         """
 
         var stmt: OpaquePointer?
@@ -314,8 +315,10 @@ actor VictorianTrainGTFSDatabase {
             index += 1
         }
         sqlite3_bind_int(stmt, index, Int32(afterSeconds))
-        index += 1
-        sqlite3_bind_int(stmt, index, Int32(limitPerStop * stopIds.count))
+        if let untilSeconds {
+            index += 1
+            sqlite3_bind_int(stmt, index, Int32(untilSeconds))
+        }
 
         var results: [ScheduledDeparture] = []
         while sqlite3_step(stmt) == SQLITE_ROW {

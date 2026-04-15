@@ -155,34 +155,33 @@ struct BusMapExplorerView: View {
                     HStack(spacing: 8) {
                         Label(mapSummary, systemImage: "mappin.and.ellipse")
                             .font(.transit(12, weight: .bold))
-                            .foregroundStyle(Color.white.opacity(0.96))
+                            .foregroundStyle(.primary)
 
                         if isLoading {
                             ProgressView()
                                 .scaleEffect(0.82)
-                                .tint(.white)
                         }
                     }
 
                     Text("Pan the map to refresh stops around the center point.")
                         .font(.transit(11, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.82))
+                        .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                        .stroke(Color.primary.opacity(0.10), lineWidth: 1)
                 }
 
                 if let errorMessage, !errorMessage.isEmpty {
                     Text(errorMessage)
                         .font(.transit(11, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.88))
+                        .foregroundStyle(.primary)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
-                        .background(Color.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
             }
 
@@ -228,12 +227,12 @@ struct BusMapExplorerView: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 18, weight: .bold))
-                .foregroundStyle(Color.white)
+                .foregroundStyle(.primary)
                 .frame(width: 54, height: 54)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                        .stroke(Color.primary.opacity(0.10), lineWidth: 1)
                 }
         }
         .buttonStyle(.plain)
@@ -302,7 +301,7 @@ struct BusMapExplorerView: View {
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color.black.opacity(0.38),
+                                palette.surfaceOverlay.opacity(0.55),
                                 palette.backgroundBase.opacity(0.72)
                             ],
                             startPoint: .topLeading,
@@ -313,12 +312,12 @@ struct BusMapExplorerView: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
+                .strokeBorder(palette.textTertiary.opacity(0.18), lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
-        .shadow(color: Color.black.opacity(0.24), radius: 24, y: -6)
+        .shadow(color: Color.black.opacity(0.14), radius: 24, y: -6)
         .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: sheetDetent)
         .transaction { transaction in
             if isDraggingSheet {
@@ -330,7 +329,7 @@ struct BusMapExplorerView: View {
     private var gripHandle: some View {
         VStack(spacing: 10) {
             Capsule()
-                .fill(Color.white.opacity(0.36))
+                .fill(palette.textTertiary.opacity(0.5))
                 .frame(width: 40, height: 4)
                 .padding(.top, 10)
 
@@ -343,15 +342,14 @@ struct BusMapExplorerView: View {
 
                 Text(mapSummary)
                     .font(.transit(11, weight: .bold))
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .foregroundStyle(palette.textSecondary)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.08), in: Capsule())
+                    .background(palette.surfaceRaised.opacity(0.8), in: Capsule())
             }
             .padding(.horizontal, 18)
 
             Divider()
-                .overlay(Color.white.opacity(0.08))
                 .padding(.horizontal, 18)
         }
     }
