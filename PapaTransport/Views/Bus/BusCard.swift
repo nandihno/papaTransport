@@ -64,7 +64,7 @@ struct BusCard: View {
     }
 
     private var nearbySearchRadiusDescription: String {
-        busInfo.provider == .victorianTrainPTV ? "2km" : "300m"
+        busInfo.provider == .victorianTrainPTV ? "5km" : "300m"
     }
 
     private var emptyStateMessage: String {
@@ -78,103 +78,131 @@ struct BusCard: View {
     }
 
     var body: some View {
-        CardContainer {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Label(title, systemImage: vehicleIconName)
-                        .font(.transit(18, weight: .bold))
-                        .foregroundStyle(palette.accent)
-                    Spacer()
-                    Text(busInfo.localTimeAtFetch)
-                        .font(.transit(11, weight: .bold))
-                        .foregroundStyle(palette.textSecondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(palette.surfaceRaised, in: Capsule())
-                }
-
-                if busInfo.locationAvailable {
-                    Label("Tap a departure to see where that trip continues.", systemImage: "list.bullet.rectangle.portrait")
-                        .font(.caption)
-                        .foregroundStyle(palette.textSecondary)
-                }
-
-                if !busInfo.locationAvailable {
-                    Label("Location unavailable. Enable Location Services to see nearby \(nearbySubjectNoun).",
-                          systemImage: "location.slash.fill")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.warning)
-                } else if displayedNearbyStops.isEmpty && displayedFavouriteStops.isEmpty {
-                    Label(
-                        emptyStateMessage,
-                        systemImage: "mappin.slash"
-                    )
-                    .font(.subheadline)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(title, systemImage: vehicleIconName)
+                    .font(.transit(18, weight: .bold))
+                    .foregroundStyle(palette.accentStrong)
+                Spacer()
+                Text(busInfo.localTimeAtFetch)
+                    .font(.transit(11, weight: .bold))
                     .foregroundStyle(palette.textSecondary)
-                } else {
-                    ForEach(busInfo.alerts) { alert in
-                        BusAlertRow(alert: alert)
-                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.08), in: Capsule())
+            }
 
+            if busInfo.locationAvailable {
+                Label("Tap a departure to see where that trip continues.", systemImage: "list.bullet.rectangle.portrait")
+                    .font(.caption)
+                    .foregroundStyle(palette.textSecondary)
+            }
+
+            if !busInfo.locationAvailable {
+                Label("Location unavailable. Enable Location Services to see nearby \(nearbySubjectNoun).",
+                      systemImage: "location.slash.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.warning)
+            } else if displayedNearbyStops.isEmpty && displayedFavouriteStops.isEmpty {
+                Label(
+                    emptyStateMessage,
+                    systemImage: "mappin.slash"
+                )
+                .font(.subheadline)
+                .foregroundStyle(palette.textSecondary)
+            } else {
+                ForEach(busInfo.alerts) { alert in
+                    BusAlertRow(alert: alert)
+                }
+
+                if !displayedNearbyStops.isEmpty {
+                    Label("Nearby", systemImage: "location.fill")
+                        .font(.caption.bold())
+                        .foregroundStyle(palette.textSecondary)
+                        .padding(.top, 4)
+                    ForEach(displayedNearbyStops) { stop in
+                        BusStopSection(
+                            stop: stop,
+                            isTripDetailEnabled: true,
+                            isSelected: selectedStopID == stop.id,
+                            isExpanded: expandedStopIDs.contains(stop.id),
+                            onToggleExpanded: {
+                                toggleExpansion(for: stop.id)
+                            },
+                            onSelectStop: {
+                                setSelectedStopID(stop.id)
+                            }
+                        ) { departure in
+                            selectedTripRequest = BusTripRequest(
+                                provider: busInfo.provider,
+                                stopId: stop.id,
+                                departure: departure
+                            )
+                        }
+                    }
+                }
+
+                if !displayedFavouriteStops.isEmpty {
                     if !displayedNearbyStops.isEmpty {
-                        Label("Nearby", systemImage: "location.fill")
-                            .font(.caption.bold())
-                            .foregroundStyle(palette.textSecondary)
-                            .padding(.top, 4)
-                        ForEach(displayedNearbyStops) { stop in
-                            BusStopSection(
-                                stop: stop,
-                                isTripDetailEnabled: true,
-                                isSelected: selectedStopID == stop.id,
-                                isExpanded: expandedStopIDs.contains(stop.id),
-                                onToggleExpanded: {
-                                    toggleExpansion(for: stop.id)
-                                },
-                                onSelectStop: {
-                                    setSelectedStopID(stop.id)
-                                }
-                            ) { departure in
-                                selectedTripRequest = BusTripRequest(
-                                    provider: busInfo.provider,
-                                    stopId: stop.id,
-                                    departure: departure
-                                )
-                            }
-                        }
+                        Divider()
+                            .overlay(Color.white.opacity(0.08))
+                            .padding(.vertical, 4)
                     }
-
-                    if !displayedFavouriteStops.isEmpty {
-                        if !displayedNearbyStops.isEmpty {
-                            Divider()
-                                .padding(.vertical, 4)
-                        }
-                        Label("Favourites", systemImage: "star.fill")
-                            .font(.caption.bold())
-                            .foregroundStyle(palette.accent)
-                        ForEach(displayedFavouriteStops) { stop in
-                            BusStopSection(
-                                stop: stop,
-                                isTripDetailEnabled: true,
-                                isSelected: selectedStopID == stop.id,
-                                isExpanded: expandedStopIDs.contains(stop.id),
-                                onToggleExpanded: {
-                                    toggleExpansion(for: stop.id)
-                                },
-                                onSelectStop: {
-                                    setSelectedStopID(stop.id)
-                                }
-                            ) { departure in
-                                selectedTripRequest = BusTripRequest(
-                                    provider: busInfo.provider,
-                                    stopId: stop.id,
-                                    departure: departure
-                                )
+                    Label("Favourites", systemImage: "star.fill")
+                        .font(.caption.bold())
+                        .foregroundStyle(palette.accentStrong)
+                    ForEach(displayedFavouriteStops) { stop in
+                        BusStopSection(
+                            stop: stop,
+                            isTripDetailEnabled: true,
+                            isSelected: selectedStopID == stop.id,
+                            isExpanded: expandedStopIDs.contains(stop.id),
+                            onToggleExpanded: {
+                                toggleExpansion(for: stop.id)
+                            },
+                            onSelectStop: {
+                                setSelectedStopID(stop.id)
                             }
+                        ) { departure in
+                            selectedTripRequest = BusTripRequest(
+                                provider: busInfo.provider,
+                                stopId: stop.id,
+                                departure: departure
+                            )
                         }
                     }
                 }
             }
         }
+        .padding(16)
+        .background {
+            ZStack(alignment: .top) {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(palette.surfaceRaised.opacity(0.10))
+
+                // Thin accent gradient bar along top edge
+                LinearGradient(
+                    colors: [palette.accentStrong.opacity(0.40), palette.accent.opacity(0.0)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(height: 2)
+                .clipShape(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 24,
+                        bottomLeadingRadius: 0,
+                        bottomTrailingRadius: 0,
+                        topTrailingRadius: 24,
+                        style: .continuous
+                    )
+                )
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(palette.accentStrong.opacity(0.14), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .onAppear {
             synchronizeSelectionWithCurrentStops()
         }
@@ -355,11 +383,16 @@ struct BusStopSection: View {
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(
-                    isSelected ? palette.accentStrong.opacity(0.36) : palette.textTertiary.opacity(0.08),
-                    lineWidth: 1
+                    isSelected ? palette.accentStrong.opacity(0.55) : palette.textTertiary.opacity(0.10),
+                    lineWidth: isSelected ? 1.5 : 1
                 )
         }
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(
+            color: isSelected ? palette.accent.opacity(0.18) : .clear,
+            radius: 8,
+            y: 3
+        )
     }
 }
 
@@ -387,50 +420,66 @@ struct BusDepartureRow: View {
     }
 
     private var rowContent: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 0) {
+            // Status accent strip on leading edge
+            Capsule()
+                .fill(statusColor)
+                .frame(width: 3)
+                .padding(.vertical, 4)
+                .padding(.trailing, 10)
+
             // Route badge
             Text(departure.routeShortName)
-                .font(.transit(14, weight: .heavy).monospacedDigit())
-                .foregroundStyle(Color.black.opacity(0.84))
-                .frame(minWidth: 42)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .font(.transit(13, weight: .heavy).monospacedDigit())
+                .foregroundStyle(palette.buttonForeground)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(minWidth: 44)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
                 .background(palette.buttonBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .shadow(color: palette.accent.opacity(0.30), radius: 5, y: 2)
 
             // Headsign / route name
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(departure.headsign ?? departure.routeLongName)
                     .font(.transit(14, weight: .bold))
                     .foregroundStyle(palette.textPrimary)
                     .lineLimit(1)
                 timeDetailLine
             }
+            .padding(.leading, 10)
 
             Spacer()
 
-            // Minutes away + status
-            VStack(alignment: .trailing, spacing: 2) {
-                HStack(spacing: 4) {
+            // Minutes away + status badge
+            VStack(alignment: .trailing, spacing: 4) {
+                HStack(alignment: .lastTextBaseline, spacing: 3) {
                     Text("\(departure.minutesAway)")
-                        .font(.transit(24, weight: .heavy).monospacedDigit())
+                        .font(.transit(22, weight: .heavy).monospacedDigit())
                         .foregroundStyle(palette.textPrimary)
                     Text("min")
-                        .font(.transit(12, weight: .bold))
+                        .font(.transit(11, weight: .bold))
                         .foregroundStyle(palette.textSecondary)
                 }
+
                 Text(departure.status.rawValue)
-                    .font(.transit(12, weight: .bold))
+                    .font(.transit(10, weight: .bold))
                     .foregroundStyle(statusColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(statusColor.opacity(0.14), in: Capsule())
             }
 
             if isInteractive {
                 Image(systemName: "chevron.right")
-                    .font(.caption.bold())
+                    .font(.caption2.bold())
                     .foregroundStyle(palette.textTertiary)
+                    .padding(.leading, 8)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 8)
     }
 
     @ViewBuilder

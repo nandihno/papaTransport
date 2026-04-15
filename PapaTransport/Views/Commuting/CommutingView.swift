@@ -131,7 +131,7 @@ struct CommutingView: View {
             }
             .toolbar(usesImmersiveMapLayout ? .hidden : .visible, for: .navigationBar)
             .navigationTitle(selectedTab == 0 ? "Bus" : "Trains")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(selectedTab == 0 ? .large : .inline)
             .toolbar {
                 if !usesImmersiveMapLayout {
                     ToolbarItem(placement: .topBarTrailing) {

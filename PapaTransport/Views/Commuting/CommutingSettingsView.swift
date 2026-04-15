@@ -149,7 +149,7 @@ struct CommutingSettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Label("Nearby stations within 2km are shown automatically on the Trains tab.", systemImage: "location.fill")
+                Label("Train stations in the visible map area are shown on the Trains tab.", systemImage: "location.fill")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 

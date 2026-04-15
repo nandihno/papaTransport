@@ -2,6 +2,12 @@ import CoreLocation
 import MapKit
 import SwiftUI
 
+private enum BusSheetDetent: CaseIterable {
+    case collapsed
+    case medium
+    case expanded
+}
+
 struct BusMapExplorerView: View {
     let provider: BusProvider
     let initialBusInfo: BusInfo?
@@ -24,6 +30,9 @@ struct BusMapExplorerView: View {
     @State private var hasBootstrapped = false
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var sheetDetent: BusSheetDetent = .medium
+    @State private var sheetDragTranslation: CGFloat = 0
+    @State private var isDraggingSheet = false
 
     init(
         provider: BusProvider,
@@ -62,72 +71,43 @@ struct BusMapExplorerView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            VStack(spacing: 0) {
-                ZStack(alignment: .top) {
-                    mapCard
-                        .ignoresSafeArea(edges: .top)
+            ZStack(alignment: .top) {
+                mapCard
+                    .ignoresSafeArea()
 
-                    LinearGradient(
-                        colors: [
-                            Color.black.opacity(0.34),
-                            Color.black.opacity(0.08),
-                            Color.clear
-                        ],
-                        startPoint: .top,
-                        endPoint: .center
-                    )
-                    .ignoresSafeArea(edges: .top)
-                    .allowsHitTesting(false)
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0.44),
+                        Color.black.opacity(0.14),
+                        Color.clear
+                    ],
+                    startPoint: .top,
+                    endPoint: .center
+                )
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
 
-                    headerOverlay(topInset: proxy.safeAreaInsets.top)
-                }
-                .frame(height: max(320, proxy.size.height * 0.46))
+                LinearGradient(
+                    colors: [
+                        Color.clear,
+                        palette.backgroundBase.opacity(0.12),
+                        palette.backgroundBase.opacity(0.58)
+                    ],
+                    startPoint: .center,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
 
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 16) {
-                        if let statusMessage, !statusMessage.isEmpty {
-                            mapInfoBanner(
-                                title: statusMessage,
-                                detail: nil,
-                                icon: "clock.badge.checkmark"
-                            )
-                        }
+                headerOverlay(topInset: proxy.safeAreaInsets.top)
 
-                        if let progressStage, !progressStage.isEmpty {
-                            mapInfoBanner(
-                                title: progressStage,
-                                detail: progressDetail,
-                                icon: "arrow.triangle.2.circlepath"
-                            )
-                        }
-
-                        BusCard(
-                            title: "Nearby Bus Stops",
-                            busInfo: nearbyBusInfo,
-                            selectedStopID: $selectedStopID,
-                            showsNearby: true,
-                            showsFavourites: false
-                        )
-
-                        if !favouriteBusInfo.favouriteStops.isEmpty {
-                            BusCard(
-                                title: "Favourite Bus Stops",
-                                busInfo: favouriteBusInfo,
-                                showsNearby: false,
-                                showsFavourites: true
-                            )
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 0)
-                    .padding(.bottom, 24)
-                }
-                .refreshable {
-                    await refreshAll()
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    bottomSheet(proxy: proxy)
                 }
             }
         }
-        .background(Color.black)
+        .background(palette.backgroundBase)
         .task {
             await bootstrap()
         }
@@ -157,11 +137,7 @@ struct BusMapExplorerView: View {
                 .tag(stop.id)
             }
         }
-        .mapStyle(.standard(elevation: .flat))
-        .mapControls {
-            MapCompass()
-            MapScaleView()
-        }
+        .mapStyle(.standard(elevation: .realistic))
         .onMapCameraChange(frequency: .onEnd) { context in
             let center = context.region.center
             mapCenter = center
@@ -174,37 +150,45 @@ struct BusMapExplorerView: View {
     @ViewBuilder
     private func headerOverlay(topInset: CGFloat) -> some View {
         HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(screenTitle)
-                    .font(.transit(34, weight: .bold))
-                    .foregroundStyle(Color.white)
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Label(mapSummary, systemImage: "mappin.and.ellipse")
+                            .font(.transit(12, weight: .bold))
+                            .foregroundStyle(Color.white.opacity(0.96))
 
-                HStack(spacing: 8) {
-                    Label(mapSummary, systemImage: "mappin.and.ellipse")
-                        .font(.transit(12, weight: .bold))
-                        .foregroundStyle(Color.white.opacity(0.96))
-
-                    if isLoading {
-                        ProgressView()
-                            .scaleEffect(0.82)
-                            .tint(.white)
+                        if isLoading {
+                            ProgressView()
+                                .scaleEffect(0.82)
+                                .tint(.white)
+                        }
                     }
-                }
 
-                Text("Pan the map to refresh stops around the center point.")
-                    .font(.transit(11, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.82))
+                    Text("Pan the map to refresh stops around the center point.")
+                        .font(.transit(11, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.82))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                }
 
                 if let errorMessage, !errorMessage.isEmpty {
                     Text(errorMessage)
                         .font(.transit(11, weight: .medium))
                         .foregroundStyle(Color.white.opacity(0.88))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
             }
 
             Spacer()
 
-            VStack(spacing: 16) {
+            VStack(spacing: 12) {
                 overlayControlButton(systemName: "gearshape.fill", action: onOpenSettings)
                 overlayControlButton(systemName: "location.fill", action: recenterOnUser)
             }
@@ -231,12 +215,12 @@ struct BusMapExplorerView: View {
             Spacer()
         }
         .padding(12)
-        .background(palette.mutedPanelBackground)
+        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(palette.accentStrong.opacity(0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     @ViewBuilder
@@ -245,14 +229,183 @@ struct BusMapExplorerView: View {
             Image(systemName: systemName)
                 .font(.system(size: 18, weight: .bold))
                 .foregroundStyle(Color.white)
-                .frame(width: 56, height: 56)
-                .background(Color.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .frame(width: 54, height: 54)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
                 }
         }
         .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func bottomSheet(proxy: GeometryProxy) -> some View {
+        let safeBottom = max(proxy.safeAreaInsets.bottom, 12)
+        let height = currentSheetHeight(in: proxy)
+
+        VStack(spacing: 0) {
+            gripHandle
+                .contentShape(Rectangle())
+                .gesture(sheetDragGesture(in: proxy))
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 14) {
+                    if let statusMessage, !statusMessage.isEmpty {
+                        mapInfoBanner(
+                            title: statusMessage,
+                            detail: nil,
+                            icon: "clock.badge.checkmark"
+                        )
+                    }
+
+                    if let progressStage, !progressStage.isEmpty {
+                        mapInfoBanner(
+                            title: progressStage,
+                            detail: progressDetail,
+                            icon: "arrow.triangle.2.circlepath"
+                        )
+                    }
+
+                    BusCard(
+                        title: "Nearby Bus Stops",
+                        busInfo: nearbyBusInfo,
+                        selectedStopID: $selectedStopID,
+                        showsNearby: true,
+                        showsFavourites: false
+                    )
+
+                    if !favouriteBusInfo.favouriteStops.isEmpty {
+                        BusCard(
+                            title: "Favourite Bus Stops",
+                            busInfo: favouriteBusInfo,
+                            showsNearby: false,
+                            showsFavourites: true
+                        )
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, safeBottom + 10)
+            }
+            .refreshable {
+                await refreshAll()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height, alignment: .top)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .fill(.ultraThinMaterial)
+
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.black.opacity(0.38),
+                                palette.backgroundBase.opacity(0.72)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+        .padding(.horizontal, 8)
+        .padding(.bottom, 8)
+        .shadow(color: Color.black.opacity(0.24), radius: 24, y: -6)
+        .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: sheetDetent)
+        .transaction { transaction in
+            if isDraggingSheet {
+                transaction.animation = nil
+            }
+        }
+    }
+
+    private var gripHandle: some View {
+        VStack(spacing: 10) {
+            Capsule()
+                .fill(Color.white.opacity(0.36))
+                .frame(width: 40, height: 4)
+                .padding(.top, 10)
+
+            HStack(alignment: .center) {
+                Text("Nearby Bus Stops")
+                    .font(.transit(14, weight: .bold))
+                    .foregroundStyle(palette.accentStrong)
+
+                Spacer()
+
+                Text(mapSummary)
+                    .font(.transit(11, weight: .bold))
+                    .foregroundStyle(Color.white.opacity(0.55))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.08), in: Capsule())
+            }
+            .padding(.horizontal, 18)
+
+            Divider()
+                .overlay(Color.white.opacity(0.08))
+                .padding(.horizontal, 18)
+        }
+    }
+
+    private func currentSheetHeight(in proxy: GeometryProxy) -> CGFloat {
+        let heights = sheetHeights(in: proxy)
+        let baseHeight = heights[sheetDetent] ?? heights[.medium] ?? 360
+        let adjustedHeight = baseHeight - sheetDragTranslation
+        return min(max(adjustedHeight, heights[.collapsed] ?? adjustedHeight), heights[.expanded] ?? adjustedHeight)
+    }
+
+    private func sheetHeights(in proxy: GeometryProxy) -> [BusSheetDetent: CGFloat] {
+        let safeTop = max(proxy.safeAreaInsets.top, 12)
+        let safeBottom = max(proxy.safeAreaInsets.bottom, 12)
+        let availableHeight = proxy.size.height - safeTop
+        let collapsed = max(104, safeBottom + 92)
+        let expanded = min(availableHeight - 18, proxy.size.height * 0.88)
+        let medium = min(max(360, proxy.size.height * 0.47), expanded - 80)
+
+        return [
+            .collapsed: collapsed,
+            .medium: max(collapsed + 60, medium),
+            .expanded: max(medium + 80, expanded)
+        ]
+    }
+
+    private func sheetDragGesture(in proxy: GeometryProxy) -> some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .global)
+            .onChanged { value in
+                isDraggingSheet = true
+                sheetDragTranslation = value.translation.height
+            }
+            .onEnded { value in
+                let heights = sheetHeights(in: proxy)
+                let baseHeight = heights[sheetDetent] ?? heights[.medium] ?? 360
+                let projectedHeight = min(
+                    max(baseHeight - value.predictedEndTranslation.height, heights[.collapsed] ?? baseHeight),
+                    heights[.expanded] ?? baseHeight
+                )
+
+                if let nearestDetent = BusSheetDetent.allCases.min(by: {
+                    abs((heights[$0] ?? projectedHeight) - projectedHeight) <
+                    abs((heights[$1] ?? projectedHeight) - projectedHeight)
+                }) {
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.84)) {
+                        sheetDetent = nearestDetent
+                        sheetDragTranslation = 0
+                        isDraggingSheet = false
+                    }
+                } else {
+                    sheetDragTranslation = 0
+                    isDraggingSheet = false
+                }
+            }
     }
 
     private func bootstrap() async {
@@ -288,17 +441,21 @@ struct BusMapExplorerView: View {
     }
 
     private func recenterOnUser() {
-        guard let coordinate = userCoordinate else {
-            cameraPosition = .userLocation(fallback: .automatic)
-            return
+        Task {
+            do {
+                let location = try await LocationManager().currentLocation()
+                let coordinate = location.coordinate
+                userCoordinate = coordinate
+                cameraPosition = .region(
+                    MKCoordinateRegion(
+                        center: coordinate,
+                        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                    )
+                )
+            } catch {
+                cameraPosition = .userLocation(fallback: .automatic)
+            }
         }
-
-        cameraPosition = .region(
-            MKCoordinateRegion(
-                center: coordinate,
-                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-            )
-        )
     }
 
     @MainActor

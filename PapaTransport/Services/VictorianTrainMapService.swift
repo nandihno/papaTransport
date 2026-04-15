@@ -6,6 +6,8 @@ final class VictorianTrainMapService: BusDataProviding {
 
     private init() {}
 
+    private let departuresPerStationLimit = 30
+
     let provider: BusProvider = .victorianTrainPTV
 
     private let tripUpdatesURL = URL(string: "https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/train/trip-updates")!
@@ -28,7 +30,7 @@ final class VictorianTrainMapService: BusDataProviding {
         let nearbyRaw = try await VictorianTrainGTFSDatabase.shared.nearbyTrainStations(
             latitude: latitude,
             longitude: longitude,
-            radiusMeters: 2000
+            radiusMeters: 5000
         )
         return try await makeBoard(
             nearbyRaw: nearbyRaw,
@@ -88,7 +90,7 @@ final class VictorianTrainMapService: BusDataProviding {
         let scheduledDepartures = try await VictorianTrainGTFSDatabase.shared.departures(
             forStopIds: allFavouriteStopIds,
             afterSeconds: nowSeconds,
-            limitPerStop: 15
+            limitPerStop: departuresPerStationLimit
         )
 
         let tripUpdates = await fetchTripUpdates()
@@ -115,7 +117,7 @@ final class VictorianTrainMapService: BusDataProviding {
                 latitude: favourite.latitude,
                 longitude: favourite.longitude,
                 distanceMeters: distance,
-                departures: Array(departures.prefix(15))
+                departures: Array(departures.prefix(departuresPerStationLimit))
             )
         }
 
@@ -361,7 +363,7 @@ final class VictorianTrainMapService: BusDataProviding {
             scheduledDepartures = try await VictorianTrainGTFSDatabase.shared.departures(
                 forStopIds: allStopIds,
                 afterSeconds: nowSeconds,
-                limitPerStop: 15
+                limitPerStop: departuresPerStationLimit
             )
         }
 
@@ -384,7 +386,7 @@ final class VictorianTrainMapService: BusDataProviding {
                 latitude: stop.stopLat,
                 longitude: stop.stopLon,
                 distanceMeters: Int(distance),
-                departures: Array(departures.prefix(15))
+                departures: Array(departures.prefix(departuresPerStationLimit))
             )
         }
 
@@ -409,7 +411,7 @@ final class VictorianTrainMapService: BusDataProviding {
                     latitude: favourite.latitude,
                     longitude: favourite.longitude,
                     distanceMeters: distance,
-                    departures: Array(departures.prefix(15))
+                    departures: Array(departures.prefix(departuresPerStationLimit))
                 )
             }
         } else {

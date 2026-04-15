@@ -103,7 +103,7 @@ actor VictorianTrainGTFSDatabase {
     func nearbyTrainStations(
         latitude: Double,
         longitude: Double,
-        radiusMeters: Double = 2000
+        radiusMeters: Double = 5000
     ) throws -> [(stop: GTFSStop, distanceMeters: Double)] {
         guard let db else { throw GTFSDBError.notReady }
 
