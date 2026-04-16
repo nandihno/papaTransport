@@ -273,7 +273,7 @@ struct TrainMapExplorerView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 16) {
-                    if !trainInfo.lineName.isEmpty {
+                    if !trainInfo.lineName.isEmpty && provider != .queenslandTrainTransLink {
                         TrainStatusSummaryCard(train: trainInfo)
 
                         if !trainInfo.plannedWorks.isEmpty {
@@ -284,6 +284,10 @@ struct TrainMapExplorerView: View {
                                 isMinimized: $isPlannedWorksMinimized
                             )
                         }
+                    }
+
+                    if provider == .queenslandTrainTransLink {
+                        QLDTrainNetworkStatusCard(alerts: nearbyInfo.alerts)
                     }
 
                     nearestStationsCard
@@ -732,6 +736,72 @@ struct TrainMapExplorerView: View {
         let lonChange = abs(region.span.longitudeDelta - previous.span.longitudeDelta)
 
         return centerDistance > 120 || latChange > 0.003 || lonChange > 0.003
+    }
+}
+
+// MARK: - QLD Train Network Status Card
+
+private struct QLDTrainNetworkStatusCard: View {
+    let alerts: [BusAlert]
+
+    @AppStorage("qldTrainNetworkStatusMinimized") private var isMinimized = false
+    @Environment(\.themePalette) private var palette
+
+    private var statusColor: Color {
+        alerts.isEmpty ? AppTheme.success : AppTheme.warning
+    }
+
+    private var statusIcon: String {
+        alerts.isEmpty ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private var statusLabel: String {
+        if alerts.isEmpty { return "No active disruptions reported." }
+        return alerts.count == 1 ? "1 active disruption" : "\(alerts.count) active disruptions"
+    }
+
+    var body: some View {
+        CardContainer {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Label("Train Network Status", systemImage: "tram.fill")
+                        .font(.transit(16, weight: .bold))
+                        .foregroundStyle(palette.accent)
+                    Spacer()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isMinimized.toggle()
+                        }
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.caption.bold())
+                            .foregroundStyle(palette.textSecondary)
+                            .frame(width: 28, height: 28)
+                            .background(palette.surfaceRaised, in: Circle())
+                            .rotationEffect(.degrees(isMinimized ? -90 : 0))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if !isMinimized {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: statusIcon)
+                            .foregroundStyle(statusColor)
+                        Text(statusLabel)
+                            .font(.transit(13, weight: .bold))
+                            .foregroundStyle(alerts.isEmpty ? AppTheme.success : palette.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if !alerts.isEmpty {
+                        Divider()
+                        ForEach(alerts) { alert in
+                            BusAlertRow(alert: alert)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

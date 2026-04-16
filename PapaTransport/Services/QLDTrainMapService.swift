@@ -11,6 +11,7 @@ final class QLDTrainMapService: BusDataProviding {
     let provider: BusProvider = .queenslandTrainTransLink
 
     private let tripUpdatesURL = URL(string: "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates/Rail")!
+    private let alertsURL = URL(string: "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/alerts")!
     private let brisbaneTimeZone = TimeZone(identifier: "Australia/Brisbane")!
 
     enum TrainDetailError: LocalizedError {
@@ -90,12 +91,14 @@ final class QLDTrainMapService: BusDataProviding {
         let cutoffSeconds = nowSeconds + Self.departureWindowSeconds
 
         async let tripUpdatesTask = fetchTripUpdates()
+        async let railAlertsTask = fetchRailAlerts()
         let scheduledDepartures = try await GTFSDatabase.shared.trainDepartures(
             forStopIds: allFavouriteStopIds,
             afterSeconds: nowSeconds,
             untilSeconds: cutoffSeconds
         )
         let tripUpdates = await tripUpdatesTask
+        let railAlerts = await railAlertsTask
         let stopDepartureMap = buildDepartureBoard(
             scheduled: scheduledDepartures,
             tripUpdates: tripUpdates,
@@ -130,7 +133,7 @@ final class QLDTrainMapService: BusDataProviding {
             provider: provider,
             nearbyStops: [],
             favouriteStops: favouriteStops,
-            alerts: [],
+            alerts: railAlerts,
             localTimeAtFetch: currentBrisbaneTimeString(),
             locationAvailable: true
         )
@@ -200,6 +203,66 @@ final class QLDTrainMapService: BusDataProviding {
     }
 
     // MARK: - GTFS-RT (no auth needed for TransLink)
+
+    /// Fetches the SEQ alerts feed and returns only currently-active rail alerts
+    /// (informed entities with routeType == 2, or network-wide alerts with no specific filter).
+    private func fetchRailAlerts() async -> [BusAlert] {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: alertsURL)
+            let feed = try GTFSRTFeedMessage(data: data)
+            let rawAlerts = feed.entities.compactMap(\.alert)
+            let now = UInt64(Date().timeIntervalSince1970)
+
+            return rawAlerts.compactMap { alert -> BusAlert? in
+                // Must be currently active
+                if !alert.activePeriods.isEmpty {
+                    let isActive = alert.activePeriods.contains {
+                        ($0.start == 0 || $0.start <= now) && ($0.end == 0 || $0.end >= now)
+                    }
+                    guard isActive else { return nil }
+                }
+
+                // Keep alerts that explicitly target rail (routeType == 2) or are
+                // network-wide (no routeType / routeId / stopId restrictions).
+                let isRailAlert = alert.informedEntities.contains {
+                    $0.routeType == 2
+                }
+                let isNetworkWide = alert.informedEntities.contains {
+                    $0.routeType == nil && $0.routeId == nil && $0.stopId == nil
+                }
+                guard isRailAlert || isNetworkWide else { return nil }
+                guard let header = alert.headerText, !header.isEmpty else { return nil }
+
+                let severity: BusAlertSeverity
+                switch alert.severityLevel {
+                case .severe:  severity = .severe
+                case .warning: severity = .warning
+                default:       severity = .info
+                }
+
+                let effectStr: String
+                switch alert.effect {
+                case .noService:         effectStr = "No Service"
+                case .reducedService:    effectStr = "Reduced Service"
+                case .significantDelays: effectStr = "Significant Delays"
+                case .detour:            effectStr = "Detour"
+                case .modifiedService:   effectStr = "Modified Service"
+                default:                 effectStr = "Service Alert"
+                }
+
+                return BusAlert(
+                    headerText: header,
+                    descriptionText: alert.descriptionText,
+                    severity: severity,
+                    effect: effectStr,
+                    affectedRoutes: alert.informedEntities.compactMap(\.routeId),
+                    affectedStops: alert.informedEntities.compactMap(\.stopId)
+                )
+            }
+        } catch {
+            return []
+        }
+    }
 
     private func fetchTripUpdates() async -> [String: GTFSRTTripUpdate] {
         do {
@@ -344,8 +407,9 @@ final class QLDTrainMapService: BusDataProviding {
         let nowSeconds = GTFSDatabase.brisbaneMidnightSeconds()
         let cutoffSeconds = nowSeconds + Self.departureWindowSeconds
 
-        // Run DB query and GTFS-RT network fetch concurrently
+        // Run DB query and GTFS-RT network fetches concurrently
         async let tripUpdatesTask = fetchTripUpdates()
+        async let railAlertsTask = fetchRailAlerts()
         let scheduledDepartures: [GTFSDatabase.ScheduledDeparture]
         if allStopIds.isEmpty {
             scheduledDepartures = []
@@ -357,6 +421,7 @@ final class QLDTrainMapService: BusDataProviding {
             )
         }
         let tripUpdates = await tripUpdatesTask
+        let railAlerts = await railAlertsTask
 
         let stopDepartureMap = buildDepartureBoard(
             scheduled: scheduledDepartures,
@@ -418,7 +483,7 @@ final class QLDTrainMapService: BusDataProviding {
             provider: provider,
             nearbyStops: nearbyStops,
             favouriteStops: favouriteStops,
-            alerts: [],
+            alerts: railAlerts,
             localTimeAtFetch: currentBrisbaneTimeString(),
             locationAvailable: true
         )

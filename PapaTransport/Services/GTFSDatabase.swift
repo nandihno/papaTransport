@@ -384,6 +384,65 @@ actor GTFSDatabase {
         return bestByStation.values.sorted { $0.1 < $1.1 }
     }
 
+    /// Searches all QLD rail stations by name. Returns one representative stop per
+    /// physical station (deduplicated by parent_station), sorted alphabetically.
+    /// Pass an empty string to return all stations.
+    func searchTrainStations(query: String) throws -> [GTFSStop] {
+        guard let db else { throw GTFSDBError.notReady }
+        let railIds = try cachedRailStopIds()
+
+        let sql: String
+        if query.isEmpty {
+            sql = """
+                SELECT s.stop_id, s.stop_name, s.stop_code, s.stop_lat, s.stop_lon,
+                       s.location_type, s.parent_station
+                FROM stops s
+                WHERE s.location_type = 0
+            """
+        } else {
+            sql = """
+                SELECT s.stop_id, s.stop_name, s.stop_code, s.stop_lat, s.stop_lon,
+                       s.location_type, s.parent_station
+                FROM stops s
+                WHERE s.location_type = 0
+                  AND s.stop_name LIKE ?
+            """
+        }
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        if !query.isEmpty {
+            let pattern = "%\(query)%"
+            sqlite3_bind_text(stmt, 1, (pattern as NSString).utf8String, -1, nil)
+        }
+
+        var bestByStation: [String: GTFSStop] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let stop = GTFSStop(
+                stopId: String(cString: sqlite3_column_text(stmt, 0)),
+                stopName: String(cString: sqlite3_column_text(stmt, 1)),
+                stopCode: sqlite3_column_text(stmt, 2).map { String(cString: $0) },
+                stopLat: sqlite3_column_double(stmt, 3),
+                stopLon: sqlite3_column_double(stmt, 4),
+                locationType: Int(sqlite3_column_int(stmt, 5)),
+                parentStation: sqlite3_column_text(stmt, 6).map { String(cString: $0) }
+            )
+            guard railIds.contains(stop.stopId) else { continue }
+            let key = stop.parentStation ?? stop.stopId
+            if bestByStation[key] == nil {
+                bestByStation[key] = stop
+            }
+        }
+
+        return bestByStation.values.sorted {
+            $0.stopName.localizedCaseInsensitiveCompare($1.stopName) == .orderedAscending
+        }
+    }
+
     func trainSiblingStopIds(for stopId: String) throws -> [String] {
         guard let db else { throw GTFSDBError.notReady }
 

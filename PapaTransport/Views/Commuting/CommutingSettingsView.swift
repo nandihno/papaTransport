@@ -9,6 +9,13 @@ struct CommutingSettingsView: View {
     @AppStorage("victorianShowBusCard") private var victorianShowBusCard = false
     @AppStorage(VictorianBusService.realtimeAPIKeyDefaultsKey) private var victorianGTFSRealtimeApiKey = ""
 
+    // QLD home station
+    @AppStorage("qldHomeStationId") private var qldHomeStationId = ""
+    @AppStorage("qldHomeStation") private var qldHomeStation = ""
+    @AppStorage("qldHomeStationCode") private var qldHomeStationCode = ""
+    @AppStorage("qldHomeStationLat") private var qldHomeStationLat: Double = 0
+    @AppStorage("qldHomeStationLon") private var qldHomeStationLon: Double = 0
+
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var progress = GTFSDownloadProgress.shared
 
@@ -46,6 +53,10 @@ struct CommutingSettingsView: View {
 
                 if transportRegion == .victorian {
                     victorianTrainDataSection
+                }
+
+                if transportRegion == .queensland && busDataReady {
+                    queenslandTrainSection
                 }
 
                 transportBusSections
@@ -92,6 +103,67 @@ struct CommutingSettingsView: View {
                 Text("Queensland mode shows SEQ bus departures near your location.")
             }
         }
+    }
+
+    private var queenslandTrainSection: some View {
+        Section {
+            NavigationLink {
+                QLDStationPickerView(
+                    title: "Home Station",
+                    selectedStopId: qldHomeStationId,
+                    onSelect: selectQLDHomeStation
+                )
+            } label: {
+                LabeledContent("Home Station") {
+                    Text(qldHomeStation.isEmpty ? "Not set" : qldHomeStation)
+                        .foregroundStyle(qldHomeStation.isEmpty ? .secondary : .primary)
+                }
+            }
+
+            if !qldHomeStationId.isEmpty {
+                Button(role: .destructive) {
+                    clearQLDHomeStation()
+                } label: {
+                    Text("Clear Home Station")
+                }
+            }
+        } header: {
+            Text("Queensland Train")
+        } footer: {
+            Text("Your home station will be pinned as a favourite on the Trains tab, showing live departures regardless of your map position.")
+        }
+    }
+
+    private func selectQLDHomeStation(_ stop: GTFSStop) {
+        // Remove previous home station from favourites if it changed
+        if !qldHomeStationId.isEmpty && qldHomeStationId != stop.stopId {
+            FavouriteBusStopStore.shared.remove(stopId: qldHomeStationId, provider: .queenslandTrainTransLink)
+        }
+        // Add new station to favourites
+        FavouriteBusStopStore.shared.add(FavouriteBusStop(
+            provider: .queenslandTrainTransLink,
+            stopId: stop.stopId,
+            stopName: stop.stopName,
+            stopCode: stop.stopCode,
+            latitude: stop.stopLat,
+            longitude: stop.stopLon
+        ))
+        qldHomeStationId = stop.stopId
+        qldHomeStation = stop.stopName
+        qldHomeStationCode = stop.stopCode ?? ""
+        qldHomeStationLat = stop.stopLat
+        qldHomeStationLon = stop.stopLon
+    }
+
+    private func clearQLDHomeStation() {
+        if !qldHomeStationId.isEmpty {
+            FavouriteBusStopStore.shared.remove(stopId: qldHomeStationId, provider: .queenslandTrainTransLink)
+        }
+        qldHomeStationId = ""
+        qldHomeStation = ""
+        qldHomeStationCode = ""
+        qldHomeStationLat = 0
+        qldHomeStationLon = 0
     }
 
     private var victorianTrainSection: some View {
