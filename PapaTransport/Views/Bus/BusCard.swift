@@ -720,6 +720,8 @@ private struct BusTripDetailSheet: View {
         switch request.provider {
         case .queenslandTransLink:
             return BusService.shared
+        case .queenslandTrainTransLink:
+            return QLDTrainMapService.shared
         case .victorianPTV:
             return VictorianBusService.shared
         case .victorianTrainPTV:

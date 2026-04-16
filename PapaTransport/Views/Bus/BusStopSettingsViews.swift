@@ -190,6 +190,13 @@ struct BusStopMapView: View {
                         minLon: minLon, maxLon: maxLon,
                         limit: 150
                     )
+                case .queenslandTrainTransLink:
+                    stops = try await GTFSDatabase.shared.trainStationsInRegion(
+                        minLat: minLat, maxLat: maxLat,
+                        minLon: minLon, maxLon: maxLon,
+                        referenceLatitude: region.center.latitude,
+                        referenceLongitude: region.center.longitude
+                    ).map(\.stop)
                 case .victorianTrainPTV:
                     stops = try await VictorianTrainGTFSDatabase.shared.stopsInRegion(
                         minLat: minLat, maxLat: maxLat,

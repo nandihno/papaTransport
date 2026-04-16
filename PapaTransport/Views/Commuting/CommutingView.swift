@@ -84,7 +84,7 @@ struct CommutingView: View {
         if selectedTab == 0 {
             return shouldShowBusCard
         }
-        return transportRegion == .victorian
+        return true
     }
 
     private var busStatusMessage: String? {
@@ -187,17 +187,17 @@ struct CommutingView: View {
         Group {
             if transportRegion == .victorian {
                 TrainMapExplorerView(
+                    provider: .victorianTrainPTV,
                     trainInfo: loadState.snapshot?.trainInfo ?? placeholderTrainInfo,
                     onOpenSettings: { showSettings = true },
                     onRefresh: { await performFetch() }
                 )
             } else {
-                ScrollView {
-                    VStack(spacing: 24) {
-                        TrainUnavailableCard()
-                    }
-                    .padding()
-                }
+                TrainMapExplorerView(
+                    provider: .queenslandTrainTransLink,
+                    onOpenSettings: { showSettings = true },
+                    onRefresh: { await performFetch() }
+                )
             }
         }
     }
@@ -317,24 +317,3 @@ private struct CommuteConfigurationCard: View {
     }
 }
 
-private struct TrainUnavailableCard: View {
-    @Environment(\.themePalette) private var palette
-
-    var body: some View {
-        CardContainer {
-            VStack(alignment: .leading, spacing: 10) {
-                Label("Trains", systemImage: "tram.fill")
-                    .font(.transit(18, weight: .bold))
-                    .foregroundStyle(palette.accent)
-
-                Text("Train information is not yet available for Queensland.")
-                    .font(.transit(14, weight: .medium))
-                    .foregroundStyle(palette.textPrimary)
-
-                Text("Switch to Victoria in Settings to access Melbourne train departures and service status.")
-                    .font(.transit(12, weight: .medium))
-                    .foregroundStyle(palette.textSecondary)
-            }
-        }
-    }
-}

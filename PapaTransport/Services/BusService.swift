@@ -215,34 +215,36 @@ final class BusService: BusDataProviding {
             throw TripDetailError.tripPatternUnavailable
         }
 
-        guard let selectedIndex =
-            pattern.firstIndex(where: { $0.stopSequence == departure.stopSequence && $0.stopId == stopId })
-            ?? pattern.firstIndex(where: { $0.stopSequence == departure.stopSequence })
-            ?? pattern.firstIndex(where: { $0.stopId == stopId })
-        else {
+        let bySequenceAndStop = pattern.firstIndex(where: { $0.stopSequence == departure.stopSequence && $0.stopId == stopId })
+        let bySequence = pattern.firstIndex(where: { $0.stopSequence == departure.stopSequence })
+        let byStop = pattern.firstIndex(where: { $0.stopId == stopId })
+        guard let selectedIndex = bySequenceAndStop ?? bySequence ?? byStop else {
             throw TripDetailError.tripPatternUnavailable
         }
 
         let selectedStop = pattern[selectedIndex]
-        let trailingStops = pattern[selectedIndex...].map { stop in
-            let scheduledSeconds: Int? = {
-                if stop.departureSeconds > 0 { return stop.departureSeconds }
-                if stop.arrivalSeconds > 0 { return stop.arrivalSeconds }
-                return nil
-            }()
-
+        let trailingStops: [BusTripStopDetail] = pattern[selectedIndex...].map { stop in
+            let scheduledSecs: Int?
+            if stop.departureSeconds > 0 {
+                scheduledSecs = stop.departureSeconds
+            } else if stop.arrivalSeconds > 0 {
+                scheduledSecs = stop.arrivalSeconds
+            } else {
+                scheduledSecs = nil
+            }
+            let isSelected = stop.stopSequence == selectedStop.stopSequence && stop.stopId == selectedStop.stopId
             return BusTripStopDetail(
                 stopId: stop.stopId,
                 stopName: stop.stopName,
                 stopCode: stop.stopCode,
                 latitude: stop.stopLat,
                 longitude: stop.stopLon,
-                scheduledTime: scheduledSeconds.map(secondsToTimeString),
+                scheduledTime: scheduledSecs.map(secondsToTimeString),
                 predictedTime: nil,
                 delaySeconds: nil,
                 status: nil,
                 stopSequence: stop.stopSequence,
-                isSelectedStop: stop.stopSequence == selectedStop.stopSequence && stop.stopId == selectedStop.stopId
+                isSelectedStop: isSelected
             )
         }
 

@@ -26,6 +26,7 @@ enum TransportRegion: String, CaseIterable {
 
 enum BusProvider: String, Codable, CaseIterable {
     case queenslandTransLink = "queenslandTransLink"
+    case queenslandTrainTransLink = "queenslandTrainTransLink"
     case victorianPTV = "victorianPTV"
     case victorianTrainPTV = "victorianTrainPTV"
 
@@ -33,6 +34,8 @@ enum BusProvider: String, Codable, CaseIterable {
         switch self {
         case .queenslandTransLink:
             return "TransLink SEQ"
+        case .queenslandTrainTransLink:
+            return "TransLink SEQ Rail"
         case .victorianPTV:
             return "PTV Victoria"
         case .victorianTrainPTV:
@@ -42,7 +45,7 @@ enum BusProvider: String, Codable, CaseIterable {
 
     var region: TransportRegion {
         switch self {
-        case .queenslandTransLink:
+        case .queenslandTransLink, .queenslandTrainTransLink:
             return .queensland
         case .victorianPTV, .victorianTrainPTV:
             return .victorian
@@ -208,7 +211,7 @@ extension BusInfo {
     static func placeholder(provider: BusProvider = .queenslandTransLink) -> BusInfo {
         let now = Date()
         let zoneIdentifier = switch provider {
-        case .queenslandTransLink: "Australia/Brisbane"
+        case .queenslandTransLink, .queenslandTrainTransLink: "Australia/Brisbane"
         case .victorianPTV, .victorianTrainPTV: "Australia/Melbourne"
         }
         let localZone = TimeZone(identifier: zoneIdentifier) ?? .current

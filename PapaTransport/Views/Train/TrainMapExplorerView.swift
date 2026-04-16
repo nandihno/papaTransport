@@ -28,6 +28,7 @@ struct TrainMapExplorerView: View {
     @State private var reloadTask: Task<Void, Never>?
     @State private var hasBootstrapped = false
     @State private var isLoading = false
+    @State private var currentRegion: MKCoordinateRegion?
     @State private var errorMessage: String?
     @State private var userCoordinateDescription = "Visible area on the map"
     @State private var showAllPlannedWorks = false
@@ -35,21 +36,23 @@ struct TrainMapExplorerView: View {
     @State private var sheetDragTranslation: CGFloat = 0
     @State private var isDraggingSheet = false
 
-    private let provider: BusProvider = .victorianTrainPTV
+    private let provider: BusProvider
 
     init(
+        provider: BusProvider = .victorianTrainPTV,
         initialBusInfo: BusInfo? = nil,
         trainInfo: TrainInfo = .placeholder(lineName: "", homeStation: "", cityStation: ""),
         onOpenSettings: @escaping () -> Void = {},
         onRefresh: @escaping () async -> Void = {}
     ) {
+        self.provider = provider
         self.initialBusInfo = initialBusInfo
         self.trainInfo = trainInfo
         self.onOpenSettings = onOpenSettings
         self.onRefresh = onRefresh
-        let seed = initialBusInfo ?? Self.emptyBoard
+        let seed = initialBusInfo ?? Self.emptyBoard(provider: provider)
         _nearbyInfo = State(initialValue: BusInfo(
-            provider: .victorianTrainPTV,
+            provider: provider,
             nearbyStops: seed.nearbyStops,
             favouriteStops: [],
             alerts: [],
@@ -59,14 +62,16 @@ struct TrainMapExplorerView: View {
         _favouriteStops = State(initialValue: seed.favouriteStops)
     }
 
-    private static let emptyBoard = BusInfo(
-        provider: .victorianTrainPTV,
-        nearbyStops: [],
-        favouriteStops: [],
-        alerts: [],
-        localTimeAtFetch: "--:-- --",
-        locationAvailable: true
-    )
+    private static func emptyBoard(provider: BusProvider = .victorianTrainPTV) -> BusInfo {
+        BusInfo(
+            provider: provider,
+            nearbyStops: [],
+            favouriteStops: [],
+            alerts: [],
+            localTimeAtFetch: "--:-- --",
+            locationAvailable: true
+        )
+    }
 
     private var nearbyStationsLabel: String {
         let count = nearbyInfo.nearbyStops.count
@@ -86,7 +91,18 @@ struct TrainMapExplorerView: View {
         favouriteStops
     }
 
+    /// 50 km guard: ~0.45° of latitude ≈ 50 km. Longitude degrees vary by latitude
+    /// but using the same threshold is a safe, simple approximation for SEQ.
+    private static let maxSpanDegrees: Double = 0.45
+
+    private var isZoomedOutTooFar: Bool {
+        guard let region = currentRegion else { return false }
+        return region.span.latitudeDelta > Self.maxSpanDegrees
+            || region.span.longitudeDelta > Self.maxSpanDegrees
+    }
+
     private var mapSummary: String {
+        if isZoomedOutTooFar { return "Zoom in to see stations" }
         let count = displayedNearbyStops.count
         let noun = count == 1 ? "station" : "stations"
         return "\(count) \(noun) in view"
@@ -162,8 +178,18 @@ struct TrainMapExplorerView: View {
         .mapStyle(.standard(elevation: .realistic))
         .onMapCameraChange(frequency: .onEnd) { context in
             let region = context.region
+            currentRegion = region
 
             guard hasBootstrapped else { return }
+
+            let tooFar = region.span.latitudeDelta > TrainMapExplorerView.maxSpanDegrees
+                      || region.span.longitudeDelta > TrainMapExplorerView.maxSpanDegrees
+            if tooFar {
+                reloadTask?.cancel()
+                nearbyInfo = Self.emptyBoard(provider: provider)
+                return
+            }
+
             scheduleReload(for: region)
         }
     }
@@ -184,7 +210,9 @@ struct TrainMapExplorerView: View {
                         }
                     }
 
-                    Text("Pan the map to load train stations in the visible area.")
+                    Text(isZoomedOutTooFar
+                         ? "Zoom in (within ~50 km) to load train stations."
+                         : "Pan the map to load train stations in the visible area.")
                         .font(.transit(11, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -245,15 +273,17 @@ struct TrainMapExplorerView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 16) {
-                    TrainStatusSummaryCard(train: trainInfo)
+                    if !trainInfo.lineName.isEmpty {
+                        TrainStatusSummaryCard(train: trainInfo)
 
-                    if !trainInfo.plannedWorks.isEmpty {
-                        TrainPlannedWorksBoard(
-                            works: displayedPlannedWorks,
-                            totalCount: trainInfo.plannedWorks.count,
-                            showsAll: $showAllPlannedWorks,
-                            isMinimized: $isPlannedWorksMinimized
-                        )
+                        if !trainInfo.plannedWorks.isEmpty {
+                            TrainPlannedWorksBoard(
+                                works: displayedPlannedWorks,
+                                totalCount: trainInfo.plannedWorks.count,
+                                showsAll: $showAllPlannedWorks,
+                                isMinimized: $isPlannedWorksMinimized
+                            )
+                        }
                     }
 
                     nearestStationsCard
@@ -432,8 +462,51 @@ struct TrainMapExplorerView: View {
             ) {
                 toggleSelection(for: stop.id)
             } onSelectDeparture: { departure in
-                selectedTripRequest = TrainTripRequest(stopId: stop.id, departure: departure)
+                selectedTripRequest = TrainTripRequest(stopId: stop.id, departure: departure, provider: provider)
             }
+        }
+    }
+
+    // MARK: - Service dispatch
+
+    private func fetchRegionInfo(
+        bounds: (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double),
+        reference: CLLocationCoordinate2D
+    ) async throws -> BusInfo {
+        switch provider {
+        case .queenslandTrainTransLink:
+            return try await QLDTrainMapService.shared.fetchBusInfo(
+                minLat: bounds.minLat,
+                maxLat: bounds.maxLat,
+                minLon: bounds.minLon,
+                maxLon: bounds.maxLon,
+                referenceLatitude: reference.latitude,
+                referenceLongitude: reference.longitude
+            )
+        default:
+            return try await VictorianTrainMapService.shared.fetchBusInfo(
+                minLat: bounds.minLat,
+                maxLat: bounds.maxLat,
+                minLon: bounds.minLon,
+                maxLon: bounds.maxLon,
+                referenceLatitude: reference.latitude,
+                referenceLongitude: reference.longitude
+            )
+        }
+    }
+
+    private func fetchFavouriteInfo(reference: CLLocationCoordinate2D) async throws -> BusInfo {
+        switch provider {
+        case .queenslandTrainTransLink:
+            return try await QLDTrainMapService.shared.fetchFavouriteBusInfo(
+                referenceLatitude: reference.latitude,
+                longitude: reference.longitude
+            )
+        default:
+            return try await VictorianTrainMapService.shared.fetchFavouriteBusInfo(
+                referenceLatitude: reference.latitude,
+                longitude: reference.longitude
+            )
         }
     }
 
@@ -488,6 +561,10 @@ struct TrainMapExplorerView: View {
     }
 
     private func scheduleReload(for region: MKCoordinateRegion) {
+        // Hard guard: never query when the visible area exceeds ~50 km
+        guard region.span.latitudeDelta <= Self.maxSpanDegrees,
+              region.span.longitudeDelta <= Self.maxSpanDegrees else { return }
+
         reloadTask?.cancel()
         reloadTask = Task {
             try? await Task.sleep(for: .milliseconds(1400))
@@ -511,18 +588,8 @@ struct TrainMapExplorerView: View {
             let reference = try await referenceCoordinate()
             let bounds = regionBounds(for: region)
 
-            async let regionInfoTask = VictorianTrainMapService.shared.fetchBusInfo(
-                minLat: bounds.minLat,
-                maxLat: bounds.maxLat,
-                minLon: bounds.minLon,
-                maxLon: bounds.maxLon,
-                referenceLatitude: reference.latitude,
-                referenceLongitude: reference.longitude
-            )
-            async let favouriteInfoTask = VictorianTrainMapService.shared.fetchFavouriteBusInfo(
-                referenceLatitude: reference.latitude,
-                longitude: reference.longitude
-            )
+            async let regionInfoTask = fetchRegionInfo(bounds: bounds, reference: reference)
+            async let favouriteInfoTask = fetchFavouriteInfo(reference: reference)
 
             let updatedInfo = try await regionInfoTask
             let favouriteInfo = try await favouriteInfoTask
@@ -883,7 +950,7 @@ private struct TrainStationSection: View {
                 Divider()
 
                 if lineGroups.isEmpty {
-                    Text("No departures found for this station within \(VictorianTrainMapService.departureWindowDescription).")
+                    Text("No departures found for this station within \("next 2 hours").")
                         .font(.caption)
                         .foregroundStyle(palette.textSecondary)
                         .italic()
@@ -1036,8 +1103,8 @@ private extension TrainLineGroup {
         guard let nextDeparture else { return "No scheduled services" }
         let firstTime = "Next \(nextDeparture.scheduledTime)"
         return departures.count == 1
-            ? "\(firstTime) • 1 service in \(VictorianTrainMapService.departureWindowDescription)"
-            : "\(firstTime) • \(departures.count) services in \(VictorianTrainMapService.departureWindowDescription)"
+            ? "\(firstTime) • 1 service in \("next 2 hours")"
+            : "\(firstTime) • \(departures.count) services in \("next 2 hours")"
     }
 
     var departureCountLabel: String {
@@ -1151,6 +1218,7 @@ private struct TrainDepartureRow: View {
 private struct TrainTripRequest: Identifiable {
     let stopId: String
     let departure: BusDeparture
+    let provider: BusProvider
 
     var id: String { "\(departure.tripId):\(stopId):\(departure.stopSequence)" }
 }
@@ -1313,7 +1381,7 @@ private struct TrainTripDetailSheet: View {
         tripDetail = nil
 
         do {
-            tripDetail = try await VictorianTrainMapService.shared.fetchTripDetail(
+            tripDetail = try await trainMapService(for: request.provider).fetchTripDetail(
                 for: request.departure,
                 stopId: request.stopId
             )
@@ -1322,6 +1390,15 @@ private struct TrainTripDetailSheet: View {
         }
 
         isLoading = false
+    }
+}
+
+private func trainMapService(for provider: BusProvider) -> any BusDataProviding {
+    switch provider {
+    case .queenslandTrainTransLink:
+        return QLDTrainMapService.shared
+    default:
+        return VictorianTrainMapService.shared
     }
 }
 
