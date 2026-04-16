@@ -8,6 +8,8 @@ struct CommutingSettingsView: View {
     @AppStorage("victorianShowTrainCard") private var victorianShowTrainCard = true
     @AppStorage("victorianShowBusCard") private var victorianShowBusCard = false
     @AppStorage(VictorianBusService.realtimeAPIKeyDefaultsKey) private var victorianGTFSRealtimeApiKey = ""
+    @AppStorage("drivingProvider") private var drivingProviderRaw = DrivingProvider.apple.rawValue
+    @AppStorage("googleMapsApiKey") private var googleMapsApiKey = ""
 
     // QLD home station
     @AppStorage("qldHomeStationId") private var qldHomeStationId = ""
@@ -46,6 +48,7 @@ struct CommutingSettingsView: View {
         NavigationStack {
             Form {
                 dashboardSection
+                drivingProviderSection
 
                 if transportRegion == .victorian && victorianShowTrainCard {
                     victorianTrainSection
@@ -101,6 +104,34 @@ struct CommutingSettingsView: View {
                 Text("Choose which Victorian commuting cards appear on the main screen.")
             } else {
                 Text("Queensland mode shows SEQ bus departures near your location.")
+            }
+        }
+    }
+
+    private var drivingProviderSection: some View {
+        Section {
+            Toggle(
+                "Use Google Maps",
+                isOn: Binding(
+                    get: { drivingProviderRaw == DrivingProvider.google.rawValue },
+                    set: { drivingProviderRaw = ($0 ? DrivingProvider.google : DrivingProvider.apple).rawValue }
+                )
+            )
+            if drivingProviderRaw == DrivingProvider.google.rawValue {
+                LabeledContent("API Key") {
+                    TextField("AIza...", text: $googleMapsApiKey)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+        } header: {
+            Text("Driving Provider")
+        } footer: {
+            if drivingProviderRaw == DrivingProvider.google.rawValue {
+                Text("Enter your Google Routes API key. The key is stored only on this device and is used to fetch live driving times on the Driving tab.")
+            } else {
+                Text("Apple Maps is used by default for live driving times. Switch to Google Maps to use the Google Routes API instead.")
             }
         }
     }

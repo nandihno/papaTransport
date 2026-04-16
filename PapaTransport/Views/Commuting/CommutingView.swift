@@ -40,6 +40,8 @@ struct CommutingView: View {
     @State private var showSettings = false
     @State private var selectedTab = 0
 
+    private var drivingStore: DrivingDestinationStore { DrivingDestinationStore.shared }
+
     private var transportRegion: TransportRegion {
         TransportRegion(rawValue: transportRegionRaw) ?? .victorian
     }
@@ -81,6 +83,7 @@ struct CommutingView: View {
     }
 
     private var usesImmersiveMapLayout: Bool {
+        if selectedTab == 2 { return false }
         if selectedTab == 0 {
             return shouldShowBusCard
         }
@@ -120,6 +123,12 @@ struct CommutingView: View {
                     .tabItem {
                         Label("Trains", systemImage: "tram.fill")
                     }
+
+                drivingTab
+                    .tag(2)
+                    .tabItem {
+                        Label("Driving", systemImage: "car.fill")
+                    }
             }
             .onChange(of: selectedTab) { _, _ in
                 fetchData()
@@ -130,7 +139,7 @@ struct CommutingView: View {
                 }
             }
             .toolbar(usesImmersiveMapLayout ? .hidden : .visible, for: .navigationBar)
-            .navigationTitle(selectedTab == 0 ? "Bus" : "Trains")
+            .navigationTitle(selectedTab == 0 ? "Bus" : selectedTab == 1 ? "Trains" : "Driving")
             .navigationBarTitleDisplayMode(selectedTab == 0 ? .large : .inline)
             .toolbar {
                 if !usesImmersiveMapLayout {
@@ -200,6 +209,13 @@ struct CommutingView: View {
                 )
             }
         }
+    }
+
+    // MARK: - Driving Tab
+
+    private var drivingTab: some View {
+        DrivingTimesTabView()
+            .environment(drivingStore)
     }
 
     @ViewBuilder
