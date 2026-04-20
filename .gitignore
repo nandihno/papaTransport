@@ -1,2 +1,5 @@
 # Ignore bundled transport databases.
 PapaTransport/db/
+
+# Local API keys — never commit this file.
+PapaTransport/APIKeys.swift

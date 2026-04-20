@@ -366,17 +366,25 @@ struct CommutingSettingsView: View {
 
     private var victorianBusSection: some View {
         Section {
-            LabeledContent("Realtime API Key") {
-                TextField("Ocp-Apim key", text: $victorianGTFSRealtimeApiKey)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .multilineTextAlignment(.trailing)
-            }
+            if APIKeys.victorianBusRealtime != nil {
+                LabeledContent("Realtime API Key") {
+                    Label("Active", systemImage: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                        .font(.subheadline)
+                }
+            } else {
+                LabeledContent("Realtime API Key") {
+                    TextField("Ocp-Apim key", text: $victorianGTFSRealtimeApiKey)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .multilineTextAlignment(.trailing)
+                }
 
-            if victorianGTFSRealtimeApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Label("Scheduled departures still work without this key. Add it to unlock live late and early predictions.", systemImage: "clock.badge.exclamationmark")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                if victorianGTFSRealtimeApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Label("Scheduled departures still work without this key. Add it to unlock live late and early predictions.", systemImage: "clock.badge.exclamationmark")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if busDataReady {
@@ -402,7 +410,11 @@ struct CommutingSettingsView: View {
         } header: {
             Text("Victorian Bus")
         } footer: {
-            Text("The bundled Victorian GTFS database powers nearby departures and favourite stops. Live predictions come from the Transport Victoria GTFS-RT bus feed when a realtime key is configured.")
+            if APIKeys.victorianBusRealtime != nil {
+                Text("The realtime key is embedded in this build. Live late and early predictions are active.")
+            } else {
+                Text("The bundled Victorian GTFS database powers nearby departures and favourite stops. Live predictions come from the Transport Victoria GTFS-RT bus feed when a realtime key is configured.")
+            }
         }
     }
 

@@ -231,8 +231,10 @@ final class VictorianBusService: BusDataProviding {
     }
 
     private func fetchTripUpdates() async -> [String: GTFSRTTripUpdate] {
-        let apiKey = UserDefaults.standard.string(forKey: Self.realtimeAPIKeyDefaultsKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let apiKey = APIKeys.victorianBusRealtime
+            ?? UserDefaults.standard.string(forKey: Self.realtimeAPIKeyDefaultsKey)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? ""
 
         guard !apiKey.isEmpty else {
             print("⚠️ Victorian GTFS-RT TripUpdates skipped: no realtime key configured in UserDefaults.")
