@@ -20,8 +20,9 @@ final class DrivingTimeService {
     func fetchDrivingTimes(provider: DrivingProvider, googleApiKey: String) async throws -> [DrivingTimeEstimate] {
         let destinations = DrivingDestinationStore.shared.all
         guard !destinations.isEmpty else { return [] }
+        let trimmedGoogleApiKey = googleApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if provider == .google, googleApiKey.isEmpty {
+        if provider == .google, trimmedGoogleApiKey.isEmpty {
             return destinations.map {
                 .unavailable(destination: $0, message: "Google Maps API key not set. Add it in Settings.")
             }
@@ -37,7 +38,7 @@ final class DrivingTimeService {
                     case .apple:
                         estimate = await Self.fetchAppleEstimate(from: sourceLocation, to: destination)
                     case .google:
-                        estimate = await Self.fetchGoogleEstimate(from: sourceLocation, to: destination, apiKey: googleApiKey)
+                        estimate = await Self.fetchGoogleEstimate(from: sourceLocation, to: destination, apiKey: trimmedGoogleApiKey)
                     }
                     return (index, estimate)
                 }
@@ -197,15 +198,18 @@ final class DrivingTimeService {
                 return .unavailable(destination: destination, message: "No driving route found.")
             }
 
-            let durationSec = parseDurationSeconds(route.duration)
+            guard let durationSec = parseDurationSeconds(route.duration) else {
+                return .unavailable(destination: destination, message: "Google response did not include a valid route duration.")
+            }
+
             let staticSec = parseDurationSeconds(route.staticDuration)
-            let travelMinutes = max(1, Int((Double(durationSec) / 60.0).rounded()))
+            let travelMinutes = max(1, Int((durationSec / 60.0).rounded()))
 
             var delayMinutes: Int? = nil
             var hasDelay = false
-            if durationSec > 0, staticSec > 0, durationSec > staticSec {
+            if let staticSec, durationSec > staticSec {
                 let delaySec = durationSec - staticSec
-                let delayMins = Int((Double(delaySec) / 60.0).rounded())
+                let delayMins = Int((delaySec / 60.0).rounded())
                 if delayMins >= 1 {
                     delayMinutes = delayMins
                     hasDelay = true
@@ -236,11 +240,10 @@ final class DrivingTimeService {
         }
     }
 
-    /// Parses Google's duration string format "123s" → 123
-    private static func parseDurationSeconds(_ value: String?) -> Int {
-        guard let value, value.hasSuffix("s"),
-              let secs = Int(value.dropLast()) else { return 0 }
-        return secs
+    /// Parses Google's duration string format, e.g. "123s" or "123.5s".
+    private static func parseDurationSeconds(_ value: String?) -> TimeInterval? {
+        guard let value, value.hasSuffix("s") else { return nil }
+        return TimeInterval(value.dropLast())
     }
 }
 

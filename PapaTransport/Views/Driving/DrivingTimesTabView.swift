@@ -8,12 +8,13 @@ import SwiftUI
 
 private enum DrivingLoadState {
     case idle
-    case loading
+    case loading(previous: [DrivingTimeEstimate]?)
     case loaded([DrivingTimeEstimate])
     case failed(String)
 
     var estimates: [DrivingTimeEstimate]? {
         if case .loaded(let results) = self { return results }
+        if case .loading(let previous) = self { return previous }
         return nil
     }
     var isLoading: Bool {
@@ -30,6 +31,7 @@ struct DrivingTimesTabView: View {
     @State private var loadState: DrivingLoadState = .idle
     @State private var showAdd = false
     @State private var editingDestination: DrivingDestination?
+    @State private var swipedDestinationID: DrivingDestination.ID?
     @State private var now = Date()
 
     private let countdownTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
@@ -185,19 +187,19 @@ struct DrivingTimesTabView: View {
     @ViewBuilder
     private func estimatesView(_ estimates: [DrivingTimeEstimate]) -> some View {
         ForEach(Array(estimates.enumerated()), id: \.element.id) { index, estimate in
-            DrivingDestinationRowView(estimate: estimate, provider: provider, now: now)
-                .contextMenu {
-                    Button {
-                        editingDestination = estimate.destination
-                    } label: {
-                        Label("Edit", systemImage: "pencil")
-                    }
-                    Button(role: .destructive) {
-                        deleteDestination(estimate.destination)
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                }
+            SwipeableDrivingDestinationRowView(
+                estimate: estimate,
+                provider: provider,
+                now: now,
+                isOpen: Binding(
+                    get: { swipedDestinationID == estimate.destination.id },
+                    set: { swipedDestinationID = $0 ? estimate.destination.id : nil }
+                )
+            ) {
+                editingDestination = estimate.destination
+            } onDelete: {
+                deleteDestination(estimate.destination)
+            }
 
             if index < estimates.count - 1 {
                 Divider()
@@ -246,16 +248,34 @@ struct DrivingTimesTabView: View {
     private func fetchTimes() async {
         guard !loadState.isLoading else { return }
 
-        withAnimation { loadState = .loading }
+        let previousEstimates = loadState.estimates
+        withAnimation { loadState = .loading(previous: previousEstimates) }
 
         do {
             let results = try await DrivingTimeService.shared.fetchDrivingTimes(
                 provider: provider,
                 googleApiKey: googleMapsApiKey
             )
+
+            if Task.isCancelled, let previousEstimates {
+                withAnimation { loadState = .loaded(previousEstimates) }
+                return
+            }
+
+            let cancelledResults = !results.isEmpty
+                && results.allSatisfy { $0.errorMessage == "Route lookup cancelled." }
+            if cancelledResults, let previousEstimates {
+                withAnimation { loadState = .loaded(previousEstimates) }
+                return
+            }
+
             withAnimation { loadState = .loaded(results) }
         } catch {
-            withAnimation { loadState = .failed(error.localizedDescription) }
+            if let previousEstimates {
+                withAnimation { loadState = .loaded(previousEstimates) }
+            } else {
+                withAnimation { loadState = .failed(error.localizedDescription) }
+            }
         }
     }
 
@@ -263,5 +283,110 @@ struct DrivingTimesTabView: View {
         if let index = store.all.firstIndex(where: { $0.id == destination.id }) {
             store.delete(offsets: IndexSet(integer: index))
         }
+    }
+}
+
+private struct SwipeableDrivingDestinationRowView: View {
+    let estimate: DrivingTimeEstimate
+    let provider: DrivingProvider
+    let now: Date
+    @Binding var isOpen: Bool
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+
+    @Environment(\.themePalette) private var palette
+    @GestureState private var dragTranslation: CGFloat = 0
+
+    private let actionWidth: CGFloat = 152
+
+    private var currentOffset: CGFloat {
+        let baseOffset = isOpen ? -actionWidth : 0
+        return min(0, max(-actionWidth, baseOffset + dragTranslation))
+    }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            actionButtons
+                .opacity(currentOffset < -8 ? 1 : 0)
+                .allowsHitTesting(isOpen)
+
+            DrivingDestinationRowView(estimate: estimate, provider: provider, now: now)
+                .background {
+                    if currentOffset < -1 {
+                        palette.cardBackground
+                    }
+                }
+                .offset(x: currentOffset)
+                .gesture(swipeGesture)
+        }
+        .clipped()
+        .animation(.snappy(duration: 0.2), value: isOpen)
+    }
+
+    private var actionButtons: some View {
+        HStack(spacing: 0) {
+            Button {
+                withAnimation(.snappy(duration: 0.2)) {
+                    isOpen = false
+                }
+                onEdit()
+            } label: {
+                swipeActionLabel(title: "Edit", systemImage: "pencil")
+            }
+            .buttonStyle(.plain)
+            .frame(width: actionWidth / 2)
+            .background(AppTheme.info)
+
+            Button(role: .destructive) {
+                withAnimation(.snappy(duration: 0.2)) {
+                    isOpen = false
+                }
+                onDelete()
+            } label: {
+                swipeActionLabel(title: "Delete", systemImage: "trash")
+            }
+            .buttonStyle(.plain)
+            .frame(width: actionWidth / 2)
+            .background(AppTheme.danger)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func swipeActionLabel(title: String, systemImage: String) -> some View {
+        VStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.system(size: 18, weight: .bold))
+            Text(title)
+                .font(.transit(12, weight: .bold))
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+    }
+
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 18, coordinateSpace: .local)
+            .updating($dragTranslation) { value, state, _ in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                state = value.translation.width
+            }
+            .onEnded { value in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+
+                let baseOffset = isOpen ? -actionWidth : 0
+                let finalOffset = min(0, max(-actionWidth, baseOffset + value.translation.width))
+                let shouldOpen = value.predictedEndTranslation.width < -actionWidth / 2
+                    || value.translation.width < -actionWidth / 3
+                let shouldClose = value.predictedEndTranslation.width > actionWidth / 3
+                    || value.translation.width > actionWidth / 4
+
+                if shouldOpen {
+                    isOpen = true
+                } else if shouldClose {
+                    isOpen = false
+                } else {
+                    isOpen = finalOffset < -actionWidth / 2
+                }
+            }
     }
 }

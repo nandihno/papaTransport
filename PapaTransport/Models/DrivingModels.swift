@@ -42,6 +42,13 @@ struct DrivingTimeEstimate: Identifiable {
     /// Negative means they are already overdue.
     /// Returns nil if no arrival target is set or travel time is unknown.
     func minutesUntilDeparture(now: Date = Date()) -> Int? {
+        guard let departureDeadline = departureDeadline(now: now) else { return nil }
+        let secondsLeft = departureDeadline.timeIntervalSince(now)
+        return Int((secondsLeft / 60).rounded())
+    }
+
+    /// The absolute time the user needs to leave to reach the destination by their target arrival time.
+    func departureDeadline(now: Date = Date()) -> Date? {
         guard let travelMinutes, let hour = destination.targetArrivalHour,
               let minute = destination.targetArrivalMinute else { return nil }
 
@@ -58,28 +65,20 @@ struct DrivingTimeEstimate: Identifiable {
             arrivalDate = calendar.date(byAdding: .day, value: 1, to: arrivalDate) ?? arrivalDate
         }
 
-        let departureDeadline = arrivalDate.addingTimeInterval(-Double(travelMinutes) * 60)
-        let secondsLeft = departureDeadline.timeIntervalSince(now)
-        return Int((secondsLeft / 60).rounded())
+        return arrivalDate.addingTimeInterval(-Double(travelMinutes) * 60)
     }
 
-    /// Human-readable countdown string, e.g. "Leave in 1h 47min", "Leave in 23 min", "Depart now", "23 min overdue".
+    /// Human-readable departure string, e.g. "Leave at 6:30 pm" or "Depart now".
     func countdownText(now: Date = Date()) -> String? {
-        guard let mins = minutesUntilDeparture(now: now) else { return nil }
-        if mins > 60 {
-            let hours = mins / 60
-            let remaining = mins % 60
-            if remaining == 0 {
-                return "Leave in \(hours)h"
-            }
-            return "Leave in \(hours)h \(remaining)min"
-        } else if mins > 5 {
-            return "Leave in \(mins) min"
-        } else if mins >= -5 {
+        guard let departureDeadline = departureDeadline(now: now),
+              let mins = minutesUntilDeparture(now: now) else { return nil }
+
+        if mins >= -5, mins <= 5 {
             return "Depart now"
-        } else {
-            return "\(abs(mins)) min overdue"
         }
+
+        let time = departureDeadline.formatted(date: .omitted, time: .shortened)
+        return mins < -5 ? "Leave time passed" : "Leave at \(time)"
     }
 
     /// Colour for the countdown pill based on urgency.
