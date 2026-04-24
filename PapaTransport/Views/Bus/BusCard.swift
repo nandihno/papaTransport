@@ -13,6 +13,7 @@ struct BusCard: View {
     let busInfo: BusInfo
     let showsNearby: Bool
     let showsFavourites: Bool
+    let emptyStateMessageOverride: String?
 
     private let selectedStopIDBinding: Binding<String?>?
 
@@ -26,13 +27,15 @@ struct BusCard: View {
         busInfo: BusInfo,
         selectedStopID: Binding<String?>? = nil,
         showsNearby: Bool = true,
-        showsFavourites: Bool = true
+        showsFavourites: Bool = true,
+        emptyStateMessageOverride: String? = nil
     ) {
         self.title = title
         self.busInfo = busInfo
         self.selectedStopIDBinding = selectedStopID
         self.showsNearby = showsNearby
         self.showsFavourites = showsFavourites
+        self.emptyStateMessageOverride = emptyStateMessageOverride
     }
 
     private var selectedStopID: String? {
@@ -68,6 +71,10 @@ struct BusCard: View {
     }
 
     private var emptyStateMessage: String {
+        if let emptyStateMessageOverride {
+            return emptyStateMessageOverride
+        }
+
         if showsFavourites {
             return busInfo.provider == .victorianTrainPTV
                 ? "No saved favourite train stations currently have departures."

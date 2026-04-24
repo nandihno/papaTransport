@@ -33,6 +33,7 @@ struct BusMapExplorerView: View {
     @State private var sheetDetent: BusSheetDetent = .medium
     @State private var sheetDragTranslation: CGFloat = 0
     @State private var isDraggingSheet = false
+    @State private var routeSearchText = ""
 
     init(
         provider: BusProvider,
@@ -59,14 +60,56 @@ struct BusMapExplorerView: View {
         mapCenter ?? lastQueriedCenter
     }
 
+    private var normalizedRouteSearchText: String {
+        routeSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isRouteSearchActive: Bool {
+        !normalizedRouteSearchText.isEmpty
+    }
+
+    private var displayedNearbyStops: [NearbyBusStop] {
+        filteredNearbyStops(from: nearbyBusInfo.nearbyStops, query: normalizedRouteSearchText)
+    }
+
+    private var displayedNearbyStopIDs: [String] {
+        displayedNearbyStops.map(\.id)
+    }
+
+    private var displayedNearbyBusInfo: BusInfo {
+        BusInfo(
+            provider: nearbyBusInfo.provider,
+            nearbyStops: displayedNearbyStops,
+            favouriteStops: nearbyBusInfo.favouriteStops,
+            alerts: nearbyBusInfo.alerts,
+            localTimeAtFetch: nearbyBusInfo.localTimeAtFetch,
+            locationAvailable: nearbyBusInfo.locationAvailable
+        )
+    }
+
     private var mapSummary: String {
-        let count = nearbyBusInfo.nearbyStops.count
+        let count = displayedNearbyStops.count
         let stopLabel = count == 1 ? "stop" : "stops"
+        if isRouteSearchActive {
+            return "\(count) \(stopLabel) for \(normalizedRouteSearchText) within 300m"
+        }
         return "\(count) \(stopLabel) within 300m"
     }
 
     private var screenTitle: String {
         provider == .victorianTrainPTV ? "Trains" : "Bus"
+    }
+
+    private var nearbyCardTitle: String {
+        isRouteSearchActive
+            ? "Nearby Bus Stops for \(normalizedRouteSearchText)"
+            : "Nearby Bus Stops"
+    }
+
+    private var nearbyEmptyStateMessage: String? {
+        guard isRouteSearchActive else { return nil }
+
+        return "No upcoming route \(normalizedRouteSearchText) departures were found at bus stops within 300m of the map center. Pan the map to search elsewhere or clear the route search."
     }
 
     var body: some View {
@@ -114,6 +157,9 @@ struct BusMapExplorerView: View {
         .onDisappear {
             reloadTask?.cancel()
         }
+        .onChange(of: displayedNearbyStopIDs) { _, _ in
+            synchronizeSelectedStopWithDisplayedStops()
+        }
     }
 
     private var mapCard: some View {
@@ -126,7 +172,7 @@ struct BusMapExplorerView: View {
                     .stroke(palette.accentStrong.opacity(0.28), lineWidth: 1.5)
             }
 
-            ForEach(nearbyBusInfo.nearbyStops) { stop in
+            ForEach(displayedNearbyStops) { stop in
                 Annotation(stop.stopName, coordinate: stop.coordinate, anchor: .bottom) {
                     BusStopMapPin(
                         stop: stop,
@@ -266,12 +312,15 @@ struct BusMapExplorerView: View {
                         )
                     }
 
+                    routeSearchField
+
                     BusCard(
-                        title: "Nearby Bus Stops",
-                        busInfo: nearbyBusInfo,
+                        title: nearbyCardTitle,
+                        busInfo: displayedNearbyBusInfo,
                         selectedStopID: $selectedStopID,
                         showsNearby: true,
-                        showsFavourites: false
+                        showsFavourites: false,
+                        emptyStateMessageOverride: nearbyEmptyStateMessage
                     )
 
                     if !favouriteBusInfo.favouriteStops.isEmpty {
@@ -351,6 +400,40 @@ struct BusMapExplorerView: View {
 
             Divider()
                 .padding(.horizontal, 18)
+        }
+    }
+
+    private var routeSearchField: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(palette.textSecondary)
+
+            TextField("Search route number", text: $routeSearchText)
+                .font(.transit(15, weight: .semibold))
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+                .keyboardType(.numbersAndPunctuation)
+                .submitLabel(.search)
+
+            if isRouteSearchActive {
+                Button {
+                    routeSearchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(palette.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear route search")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .background(palette.surfaceRaised.opacity(0.86), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(palette.textTertiary.opacity(0.16), lineWidth: 1)
         }
     }
 
@@ -510,10 +593,16 @@ struct BusMapExplorerView: View {
                 )
             }
 
-            if let selectedStopID, updatedBusInfo.nearbyStops.contains(where: { $0.id == selectedStopID }) {
+            let matchingStops = filteredNearbyStops(
+                from: updatedBusInfo.nearbyStops,
+                query: normalizedRouteSearchText
+            )
+            let matchingStopIDs = Set(matchingStops.map(\.id))
+
+            if let selectedStopID, matchingStopIDs.contains(selectedStopID) {
                 self.selectedStopID = selectedStopID
-            } else if shouldAutoSelectFirstStop {
-                selectedStopID = updatedBusInfo.nearbyStops.first?.id
+            } else if shouldAutoSelectFirstStop || isRouteSearchActive {
+                selectedStopID = matchingStops.first?.id
             } else {
                 selectedStopID = nil
             }
@@ -565,6 +654,45 @@ struct BusMapExplorerView: View {
                 longitude: longitude
             )
         }
+    }
+
+    private func filteredNearbyStops(from stops: [NearbyBusStop], query: String) -> [NearbyBusStop] {
+        guard !query.isEmpty else { return stops }
+
+        return stops.compactMap { stop in
+            let matchingDepartures = stop.departures.filter { departure in
+                routeMatches(departure: departure, query: query)
+            }
+
+            guard !matchingDepartures.isEmpty else { return nil }
+
+            return NearbyBusStop(
+                id: stop.id,
+                stopName: stop.stopName,
+                stopCode: stop.stopCode,
+                latitude: stop.latitude,
+                longitude: stop.longitude,
+                distanceMeters: stop.distanceMeters,
+                departures: matchingDepartures
+            )
+        }
+    }
+
+    private func routeMatches(departure: BusDeparture, query: String) -> Bool {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedQuery.isEmpty else { return true }
+
+        return departure.routeShortName.localizedCaseInsensitiveContains(normalizedQuery)
+            || departure.routeLongName.localizedCaseInsensitiveContains(normalizedQuery)
+            || (departure.headsign?.localizedCaseInsensitiveContains(normalizedQuery) ?? false)
+    }
+
+    private func synchronizeSelectedStopWithDisplayedStops() {
+        if let selectedStopID, displayedNearbyStopIDs.contains(selectedStopID) {
+            return
+        }
+
+        selectedStopID = displayedNearbyStops.first?.id
     }
 }
 
