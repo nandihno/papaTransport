@@ -1,4 +1,6 @@
 import SwiftUI
+import UserNotifications
+import UIKit
 
 struct CommutingSettingsView: View {
     @Binding var trainLineName: String
@@ -10,6 +12,9 @@ struct CommutingSettingsView: View {
     @AppStorage(VictorianBusService.realtimeAPIKeyDefaultsKey) private var victorianGTFSRealtimeApiKey = ""
     @AppStorage("drivingProvider") private var drivingProviderRaw = DrivingProvider.apple.rawValue
     @AppStorage("googleMapsApiKey") private var googleMapsApiKey = ""
+    @AppStorage(TrainStatusNotificationService.enabledKey) private var trainStatusNotificationsEnabled = false
+    @AppStorage(TrainStatusNotificationService.selectedWeekdaysKey) private var trainStatusNotificationWeekdayMask = TrainStatusNotificationService.defaultWeekdayMask
+    @AppStorage(TrainStatusNotificationService.timesKey) private var trainStatusNotificationTimesRaw = TrainStatusNotificationService.encodeTimes([TrainStatusNotificationService.defaultTimeSeconds])
 
     // QLD home station
     @AppStorage("qldHomeStationId") private var qldHomeStationId = ""
@@ -19,6 +24,7 @@ struct CommutingSettingsView: View {
     @AppStorage("qldHomeStationLon") private var qldHomeStationLon: Double = 0
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @ObservedObject private var progress = GTFSDownloadProgress.shared
 
     @State private var busDataReady = false
@@ -30,6 +36,9 @@ struct CommutingSettingsView: View {
     @State private var trainSetupMessage = ""
     @State private var trainSetupInProgress = false
     @State private var showTrainResetConfirmation = false
+    @State private var notificationAuthorizationStatus: UNAuthorizationStatus = .notDetermined
+    @State private var notificationMessage = ""
+    @State private var sendingStatusNotification = false
 
     private var transportRegion: TransportRegion {
         TransportRegion(rawValue: transportRegionRaw) ?? .victorian
@@ -52,6 +61,7 @@ struct CommutingSettingsView: View {
 
                 if transportRegion == .victorian && victorianShowTrainCard {
                     victorianTrainSection
+                    trainStatusNotificationSection
                 }
 
                 if transportRegion == .victorian {
@@ -74,13 +84,40 @@ struct CommutingSettingsView: View {
             .task {
                 await refreshBusState()
                 await refreshTrainState()
+                await refreshNotificationAuthorizationStatus()
             }
             .onChange(of: transportRegionRaw) { _, _ in
                 Task { await refreshBusState() }
                 Task { await refreshTrainState() }
+                if transportRegion != .victorian {
+                    Task { await disableTrainStatusNotificationsIfUnavailable() }
+                }
+            }
+            .onChange(of: victorianShowTrainCard) { _, isVisible in
+                if !isVisible {
+                    Task { await disableTrainStatusNotificationsIfUnavailable() }
+                }
             }
             .onChange(of: victorianShowBusCard) { _, _ in
                 Task { await refreshBusState() }
+            }
+            .onChange(of: trainStatusNotificationWeekdayMask) { _, mask in
+                if mask == 0 {
+                    notificationMessage = "Select at least one day."
+                }
+                Task { await TrainStatusNotificationService.shared.settingsDidChange() }
+            }
+            .onChange(of: trainStatusNotificationTimesRaw) { _, _ in
+                Task { await TrainStatusNotificationService.shared.settingsDidChange() }
+            }
+            .onChange(of: trainLineName) { _, _ in
+                Task {
+                    if trainLineName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        await disableTrainStatusNotificationsIfUnavailable()
+                    } else {
+                        await TrainStatusNotificationService.shared.settingsDidChange()
+                    }
+                }
             }
         }
     }
@@ -239,6 +276,101 @@ struct CommutingSettingsView: View {
         }
     }
 
+    private var trainStatusNotificationSection: some View {
+        Section {
+            Toggle(
+                "Train Status Notifications",
+                isOn: Binding(
+                    get: { trainStatusNotificationsEnabled },
+                    set: { isEnabled in
+                        Task { await setTrainStatusNotificationsEnabled(isEnabled) }
+                    }
+                )
+            )
+            .disabled(trainLineName.isEmpty)
+
+            if trainStatusNotificationsEnabled {
+                NavigationLink {
+                    TrainNotificationScheduleView()
+                } label: {
+                    LabeledContent("Schedule") {
+                        Text(trainNotificationScheduleSummary)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                    }
+                }
+
+                Button {
+                    Task { await sendCurrentTrainStatusNotification() }
+                } label: {
+                    if sendingStatusNotification {
+                        ProgressView()
+                    } else {
+                        Label("Send Current Status Now", systemImage: "paperplane.fill")
+                    }
+                }
+                .disabled(sendingStatusNotification || trainLineName.isEmpty)
+            }
+
+            if notificationAuthorizationStatus == .denied {
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        openURL(url)
+                    }
+                } label: {
+                    Label("Open Notification Settings", systemImage: "gearshape.fill")
+                }
+            }
+
+            if !notificationMessage.isEmpty {
+                Text(notificationMessage)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Train Status Notifications")
+        } footer: {
+            if trainLineName.isEmpty {
+                Text("Select a Victorian train line before enabling timed status notifications.")
+                    .foregroundStyle(.orange)
+            } else if trainStatusNotificationWeekdayMask == 0 {
+                Text("Open Schedule and select at least one active day.")
+                    .foregroundStyle(.orange)
+            } else if TrainStatusNotificationService.decodeTimes(trainStatusNotificationTimesRaw).isEmpty {
+                Text("Open Schedule and add at least one notification time.")
+                    .foregroundStyle(.orange)
+            } else if trainStatusNotificationsEnabled {
+                Text("PapaTransport checks the \(trainLineName) line near your scheduled Melbourne times. iOS controls the exact background delivery time.")
+            } else {
+                Text("Configure the days and times when PapaTransport should send the \(trainLineName) line status.")
+            }
+        }
+    }
+
+    private var trainNotificationScheduleSummary: String {
+        let dayCount = (1...7).filter { trainStatusNotificationWeekdayMask & (1 << $0) != 0 }.count
+        let times = TrainStatusNotificationService.decodeTimes(trainStatusNotificationTimesRaw)
+
+        switch (dayCount, times.count) {
+        case (0, _):
+            return "No days"
+        case (_, 0):
+            return "No times"
+        case (7, 1):
+            return "Every day, 1 time"
+        case (7, let timeCount):
+            return "Every day, \(timeCount) times"
+        case (1, 1):
+            return "1 day, 1 time"
+        case (1, let timeCount):
+            return "1 day, \(timeCount) times"
+        case (let dayCount, 1):
+            return "\(dayCount) days, 1 time"
+        default:
+            return "\(dayCount) days, \(times.count) times"
+        }
+    }
+
     private var victorianTrainDataSection: some View {
         Section {
             if trainDataReady {
@@ -286,6 +418,79 @@ struct CommutingSettingsView: View {
         } footer: {
             Text("The bundled Victorian train GTFS database powers nearby station departures. Live predictions use the same Transport Victoria realtime key configured below.")
         }
+    }
+
+    @MainActor
+    private func refreshNotificationAuthorizationStatus() async {
+        notificationAuthorizationStatus = await TrainStatusNotificationService.shared.notificationSettings()
+    }
+
+    @MainActor
+    private func setTrainStatusNotificationsEnabled(_ isEnabled: Bool) async {
+        notificationMessage = ""
+
+        if isEnabled {
+            guard !trainLineName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                trainStatusNotificationsEnabled = false
+                notificationMessage = "Select a Victorian train line before enabling notifications."
+                return
+            }
+
+            guard trainStatusNotificationWeekdayMask != 0 else {
+                trainStatusNotificationsEnabled = false
+                notificationMessage = "Select at least one notification day."
+                await TrainStatusNotificationService.shared.settingsDidChange()
+                return
+            }
+
+            guard !TrainStatusNotificationService.decodeTimes(trainStatusNotificationTimesRaw).isEmpty else {
+                trainStatusNotificationsEnabled = false
+                notificationMessage = "Add at least one notification time."
+                await TrainStatusNotificationService.shared.settingsDidChange()
+                return
+            }
+
+            let status = await TrainStatusNotificationService.shared.requestAuthorization()
+            notificationAuthorizationStatus = status
+
+            guard status == .authorized || status == .provisional else {
+                trainStatusNotificationsEnabled = false
+                notificationMessage = "Notifications are disabled for PapaTransport."
+                await TrainStatusNotificationService.shared.settingsDidChange()
+                return
+            }
+
+            trainStatusNotificationsEnabled = true
+            notificationMessage = "Timed train status checks are enabled."
+        } else {
+            trainStatusNotificationsEnabled = false
+            notificationMessage = "Timed train status checks are disabled."
+        }
+
+        await TrainStatusNotificationService.shared.settingsDidChange()
+    }
+
+    @MainActor
+    private func disableTrainStatusNotificationsIfUnavailable() async {
+        guard trainStatusNotificationsEnabled else { return }
+        trainStatusNotificationsEnabled = false
+        await TrainStatusNotificationService.shared.settingsDidChange()
+    }
+
+    @MainActor
+    private func sendCurrentTrainStatusNotification() async {
+        notificationMessage = ""
+        sendingStatusNotification = true
+        defer { sendingStatusNotification = false }
+
+        do {
+            try await TrainStatusNotificationService.shared.sendCurrentStatusNow()
+            notificationMessage = "Current train status notification sent."
+        } catch {
+            notificationMessage = error.localizedDescription
+        }
+
+        await refreshNotificationAuthorizationStatus()
     }
 
     @ViewBuilder
