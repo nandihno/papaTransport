@@ -223,7 +223,8 @@ final class BusService: BusDataProviding {
         }
 
         let selectedStop = pattern[selectedIndex]
-        let trailingStops: [BusTripStopDetail] = pattern[selectedIndex...].map { stop in
+
+        func makeDetail(_ stop: GTFSDatabase.TripPatternStop, isSelected: Bool) -> BusTripStopDetail {
             let scheduledSecs: Int?
             if stop.departureSeconds > 0 {
                 scheduledSecs = stop.departureSeconds
@@ -232,7 +233,6 @@ final class BusService: BusDataProviding {
             } else {
                 scheduledSecs = nil
             }
-            let isSelected = stop.stopSequence == selectedStop.stopSequence && stop.stopId == selectedStop.stopId
             return BusTripStopDetail(
                 stopId: stop.stopId,
                 stopName: stop.stopName,
@@ -246,6 +246,11 @@ final class BusService: BusDataProviding {
                 stopSequence: stop.stopSequence,
                 isSelectedStop: isSelected
             )
+        }
+
+        let leadingStops: [BusTripStopDetail] = pattern[..<selectedIndex].map { makeDetail($0, isSelected: false) }
+        let trailingStops: [BusTripStopDetail] = pattern[selectedIndex...].map {
+            makeDetail($0, isSelected: $0.stopSequence == selectedStop.stopSequence && $0.stopId == selectedStop.stopId)
         }
 
         guard let terminalStop = trailingStops.last else {
@@ -264,6 +269,7 @@ final class BusService: BusDataProviding {
             terminalStopName: terminalStop.stopName,
             terminalScheduledTime: terminalStop.scheduledTime,
             terminalPredictedTime: nil,
+            stopsBeforeSelected: leadingStops,
             stopsFromSelected: trailingStops
         )
     }

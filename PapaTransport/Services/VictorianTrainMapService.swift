@@ -158,10 +158,10 @@ final class VictorianTrainMapService: BusDataProviding {
 
         let selectedStop = pattern[selectedIndex]
         let tripUpdate = tripUpdates[departure.tripId]
-        let trailingStops = pattern[selectedIndex...].map { stop in
+
+        func makeDetail(_ stop: VictorianTrainGTFSDatabase.TripPatternStop, isSelected: Bool) -> BusTripStopDetail {
             let scheduledSeconds = scheduledSeconds(for: stop)
             let realtime = realtimeStopDetail(for: stop, tripUpdate: tripUpdate)
-
             return BusTripStopDetail(
                 stopId: stop.stopId,
                 stopName: stop.stopName,
@@ -173,8 +173,13 @@ final class VictorianTrainMapService: BusDataProviding {
                 delaySeconds: realtime.delaySeconds,
                 status: realtime.status,
                 stopSequence: stop.stopSequence,
-                isSelectedStop: stop.stopSequence == selectedStop.stopSequence && stop.stopId == selectedStop.stopId
+                isSelectedStop: isSelected
             )
+        }
+
+        let leadingStops: [BusTripStopDetail] = pattern[..<selectedIndex].map { makeDetail($0, isSelected: false) }
+        let trailingStops = pattern[selectedIndex...].map {
+            makeDetail($0, isSelected: $0.stopSequence == selectedStop.stopSequence && $0.stopId == selectedStop.stopId)
         }
 
         guard let terminalStop = trailingStops.last else {
@@ -193,6 +198,7 @@ final class VictorianTrainMapService: BusDataProviding {
             terminalStopName: terminalStop.stopName,
             terminalScheduledTime: terminalStop.scheduledTime,
             terminalPredictedTime: terminalStop.predictedTime,
+            stopsBeforeSelected: leadingStops,
             stopsFromSelected: trailingStops
         )
     }

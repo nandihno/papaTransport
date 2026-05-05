@@ -542,6 +542,7 @@ private struct BusTripDetailSheet: View {
     @State private var tripDetail: BusTripDetail?
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var showPriorStops = false
 
     var body: some View {
         NavigationStack {
@@ -559,6 +560,9 @@ private struct BusTripDetailSheet: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             summaryCard(tripDetail)
+                            if !tripDetail.stopsBeforeSelected.isEmpty {
+                                priorStopsCard(tripDetail)
+                            }
                             stopsCard(tripDetail)
                         }
                         .padding()
@@ -659,6 +663,41 @@ private struct BusTripDetailSheet: View {
                             .background(palette.surfaceRaised, in: Capsule())
                     }
                 }
+            }
+        }
+        .padding(16)
+        .background(palette.mutedPanelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func priorStopsCard(_ tripDetail: BusTripDetail) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    showPriorStops.toggle()
+                }
+            } label: {
+                HStack {
+                    Text(showPriorStops ? "Stops Before Here" : "\(tripDetail.stopsBeforeSelected.count) stops before here")
+                        .font(.transit(18, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+                    Spacer()
+                    Image(systemName: showPriorStops ? "chevron.up" : "chevron.down")
+                        .font(.caption.bold())
+                        .foregroundStyle(palette.textSecondary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if showPriorStops {
+                ForEach(Array(tripDetail.stopsBeforeSelected.enumerated()), id: \.element.id) { index, stop in
+                    VictorianTripStopRow(
+                        stop: stop,
+                        isLast: index == tripDetail.stopsBeforeSelected.count - 1
+                    )
+                }
+                .opacity(0.55)
             }
         }
         .padding(16)
