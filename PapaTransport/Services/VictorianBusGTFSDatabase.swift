@@ -265,6 +265,148 @@ actor VictorianBusGTFSDatabase {
         return results
     }
 
+    func routesAtStopToday(stopId: String) throws -> [BusRouteAtStop] {
+        guard let db else { throw GTFSDBError.notReady }
+
+        let activeServiceIds = try todayActiveServiceIds()
+        guard !activeServiceIds.isEmpty else { return [] }
+
+        let servicePlaceholders = activeServiceIds.map { _ in "?" }.joined(separator: ",")
+        let sql = """
+            SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name,
+                            t.direction_id, t.trip_headsign
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            JOIN routes r ON t.route_id = r.route_id
+            WHERE st.stop_id = ?
+              AND t.service_id IN (\(servicePlaceholders))
+              AND r.route_type = 3
+            ORDER BY r.route_short_name COLLATE NOCASE ASC, t.direction_id ASC
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        sqlite3_bind_text(stmt, 1, (stopId as NSString).utf8String, -1, nil)
+        var index: Int32 = 2
+        for serviceId in activeServiceIds {
+            sqlite3_bind_text(stmt, index, (serviceId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+
+        var results: [BusRouteAtStop] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(
+                BusRouteAtStop(
+                    routeId: String(cString: sqlite3_column_text(stmt, 0)),
+                    routeShortName: sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? "",
+                    routeLongName: sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? "",
+                    directionId: Int(sqlite3_column_int(stmt, 3)),
+                    tripHeadsign: sqlite3_column_text(stmt, 4).map { String(cString: $0) }
+                )
+            )
+        }
+
+        return results
+    }
+
+    func activeTripsThroughStop(
+        routeId: String,
+        directionId: Int,
+        stopId: String,
+        aroundSeconds: Int,
+        windowSeconds: Int = 25 * 60,
+        limit: Int = 20
+    ) throws -> [ActiveTripCandidate] {
+        guard let db else { throw GTFSDBError.notReady }
+
+        let activeServiceIds = try todayActiveServiceIds()
+        guard !activeServiceIds.isEmpty else { return [] }
+
+        let servicePlaceholders = activeServiceIds.map { _ in "?" }.joined(separator: ",")
+        let sql = """
+            SELECT t.trip_id, t.route_id, r.route_short_name, r.route_long_name,
+                   t.trip_headsign, t.direction_id,
+                   (SELECT MIN(IFNULL(st2.departure_seconds, st2.arrival_seconds))
+                      FROM stop_times st2 WHERE st2.trip_id = t.trip_id) AS first_seconds,
+                   (SELECT MAX(IFNULL(st2.arrival_seconds, st2.departure_seconds))
+                      FROM stop_times st2 WHERE st2.trip_id = t.trip_id) AS last_seconds,
+                   IFNULL(st.departure_seconds, st.arrival_seconds) AS boarding_seconds
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            JOIN routes r ON t.route_id = r.route_id
+            WHERE st.stop_id = ?
+              AND t.route_id = ?
+              AND t.direction_id = ?
+              AND t.service_id IN (\(servicePlaceholders))
+              AND r.route_type = 3
+              AND IFNULL(st.departure_seconds, st.arrival_seconds) BETWEEN ? AND ?
+            ORDER BY ABS(IFNULL(st.departure_seconds, st.arrival_seconds) - ?) ASC
+            LIMIT ?
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var index: Int32 = 1
+        sqlite3_bind_text(stmt, index, (stopId as NSString).utf8String, -1, nil); index += 1
+        sqlite3_bind_text(stmt, index, (routeId as NSString).utf8String, -1, nil); index += 1
+        sqlite3_bind_int(stmt, index, Int32(directionId)); index += 1
+        for serviceId in activeServiceIds {
+            sqlite3_bind_text(stmt, index, (serviceId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+        sqlite3_bind_int(stmt, index, Int32(aroundSeconds - windowSeconds)); index += 1
+        sqlite3_bind_int(stmt, index, Int32(aroundSeconds + windowSeconds)); index += 1
+        sqlite3_bind_int(stmt, index, Int32(aroundSeconds)); index += 1
+        sqlite3_bind_int(stmt, index, Int32(limit))
+
+        var results: [ActiveTripCandidate] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(
+                ActiveTripCandidate(
+                    tripId: String(cString: sqlite3_column_text(stmt, 0)),
+                    routeId: String(cString: sqlite3_column_text(stmt, 1)),
+                    routeShortName: sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? "",
+                    routeLongName: sqlite3_column_text(stmt, 3).map { String(cString: $0) } ?? "",
+                    tripHeadsign: sqlite3_column_text(stmt, 4).map { String(cString: $0) },
+                    directionId: Int(sqlite3_column_int(stmt, 5)),
+                    firstSeconds: Int(sqlite3_column_int(stmt, 6)),
+                    lastSeconds: Int(sqlite3_column_int(stmt, 7)),
+                    boardingSeconds: Int(sqlite3_column_int(stmt, 8))
+                )
+            )
+        }
+
+        return results
+    }
+
+    struct BusRouteAtStop {
+        let routeId: String
+        let routeShortName: String
+        let routeLongName: String
+        let directionId: Int
+        let tripHeadsign: String?
+    }
+
+    struct ActiveTripCandidate {
+        let tripId: String
+        let routeId: String
+        let routeShortName: String
+        let routeLongName: String
+        let tripHeadsign: String?
+        let directionId: Int
+        let firstSeconds: Int
+        let lastSeconds: Int
+        let boardingSeconds: Int
+    }
+
     struct ScheduledDeparture {
         let tripId: String
         let stopId: String

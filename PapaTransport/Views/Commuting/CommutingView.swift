@@ -274,7 +274,7 @@ struct CommutingView: View {
     // MARK: - Locate Tab
 
     private var locateTab: some View {
-        TrainLocateMeView()
+        LocateContainerView(transportRegion: transportRegion)
     }
 
     // MARK: - Driving Tab
