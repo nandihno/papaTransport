@@ -13,7 +13,9 @@ struct BusMapExplorerView: View {
     let initialBusInfo: BusInfo?
     let onOpenSettings: () -> Void
     let onRefresh: () async -> Void
+    let autoRefreshEnabled: Bool
     let statusMessage: String?
+    let statusDetail: String?
     let progressStage: String?
     let progressDetail: String?
 
@@ -35,12 +37,16 @@ struct BusMapExplorerView: View {
     @State private var isDraggingSheet = false
     @State private var routeSearchText = ""
 
+    private static let autoRefreshInterval: Duration = .seconds(60)
+
     init(
         provider: BusProvider,
         initialBusInfo: BusInfo? = nil,
         onOpenSettings: @escaping () -> Void = {},
         onRefresh: @escaping () async -> Void = {},
+        autoRefreshEnabled: Bool = true,
         statusMessage: String? = nil,
+        statusDetail: String? = nil,
         progressStage: String? = nil,
         progressDetail: String? = nil
     ) {
@@ -48,7 +54,9 @@ struct BusMapExplorerView: View {
         self.initialBusInfo = initialBusInfo
         self.onOpenSettings = onOpenSettings
         self.onRefresh = onRefresh
+        self.autoRefreshEnabled = autoRefreshEnabled
         self.statusMessage = statusMessage
+        self.statusDetail = statusDetail
         self.progressStage = progressStage
         self.progressDetail = progressDetail
         let seed = initialBusInfo ?? .placeholder(provider: provider)
@@ -153,6 +161,9 @@ struct BusMapExplorerView: View {
         .background(palette.backgroundBase)
         .task {
             await bootstrap()
+        }
+        .task(id: autoRefreshEnabled) {
+            await runAutoRefreshLoop()
         }
         .onDisappear {
             reloadTask?.cancel()
@@ -299,7 +310,7 @@ struct BusMapExplorerView: View {
                     if let statusMessage, !statusMessage.isEmpty {
                         mapInfoBanner(
                             title: statusMessage,
-                            detail: nil,
+                            detail: statusDetail,
                             icon: "clock.badge.checkmark"
                         )
                     }
@@ -559,6 +570,16 @@ struct BusMapExplorerView: View {
             }
 
             await reloadBoard(around: coordinate)
+        }
+    }
+
+    private func runAutoRefreshLoop() async {
+        guard autoRefreshEnabled else { return }
+
+        while !Task.isCancelled {
+            try? await Task.sleep(for: Self.autoRefreshInterval)
+            guard !Task.isCancelled, autoRefreshEnabled else { return }
+            await refreshAll()
         }
     }
 

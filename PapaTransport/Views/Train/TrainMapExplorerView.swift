@@ -13,6 +13,9 @@ struct TrainMapExplorerView: View {
     let trainInfo: TrainInfo
     let onOpenSettings: () -> Void
     let onRefresh: () async -> Void
+    let autoRefreshEnabled: Bool
+    let statusMessage: String?
+    let statusDetail: String?
 
     @AppStorage("trainNearestStationsMinimized") private var isNearestStationsMinimized = false
     @AppStorage("trainPlannedWorksMinimized") private var isPlannedWorksMinimized = false
@@ -37,19 +40,26 @@ struct TrainMapExplorerView: View {
     @State private var isDraggingSheet = false
 
     private let provider: BusProvider
+    private static let autoRefreshInterval: Duration = .seconds(60)
 
     init(
         provider: BusProvider = .victorianTrainPTV,
         initialBusInfo: BusInfo? = nil,
         trainInfo: TrainInfo = .placeholder(lineName: "", homeStation: "", cityStation: ""),
         onOpenSettings: @escaping () -> Void = {},
-        onRefresh: @escaping () async -> Void = {}
+        onRefresh: @escaping () async -> Void = {},
+        autoRefreshEnabled: Bool = true,
+        statusMessage: String? = nil,
+        statusDetail: String? = nil
     ) {
         self.provider = provider
         self.initialBusInfo = initialBusInfo
         self.trainInfo = trainInfo
         self.onOpenSettings = onOpenSettings
         self.onRefresh = onRefresh
+        self.autoRefreshEnabled = autoRefreshEnabled
+        self.statusMessage = statusMessage
+        self.statusDetail = statusDetail
         let seed = initialBusInfo ?? Self.emptyBoard(provider: provider)
         _nearbyInfo = State(initialValue: BusInfo(
             provider: provider,
@@ -150,6 +160,9 @@ struct TrainMapExplorerView: View {
         .task {
             await bootstrap()
         }
+        .task(id: autoRefreshEnabled) {
+            await runAutoRefreshLoop()
+        }
         .onDisappear {
             reloadTask?.cancel()
         }
@@ -246,6 +259,33 @@ struct TrainMapExplorerView: View {
     }
 
     @ViewBuilder
+    private func mapInfoBanner(title: String, detail: String?, icon: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(palette.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.transit(13, weight: .bold))
+                    .foregroundStyle(palette.textPrimary)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.transit(12, weight: .medium))
+                        .foregroundStyle(palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    @ViewBuilder
     private func overlayControlButton(systemName: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
@@ -273,6 +313,14 @@ struct TrainMapExplorerView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 16) {
+                    if let statusMessage, !statusMessage.isEmpty {
+                        mapInfoBanner(
+                            title: statusMessage,
+                            detail: statusDetail,
+                            icon: "clock.badge.checkmark"
+                        )
+                    }
+
                     if !trainInfo.lineName.isEmpty && provider != .queenslandTrainTransLink {
                         TrainStatusSummaryCard(train: trainInfo)
 
@@ -579,6 +627,16 @@ struct TrainMapExplorerView: View {
             }
 
             await reloadBoard(for: region)
+        }
+    }
+
+    private func runAutoRefreshLoop() async {
+        guard autoRefreshEnabled else { return }
+
+        while !Task.isCancelled {
+            try? await Task.sleep(for: Self.autoRefreshInterval)
+            guard !Task.isCancelled, autoRefreshEnabled else { return }
+            await refreshAll()
         }
     }
 

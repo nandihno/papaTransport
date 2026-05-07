@@ -24,17 +24,26 @@ private enum DrivingLoadState {
 }
 
 struct DrivingTimesTabView: View {
+    @Environment(\.themePalette) private var palette
     @Environment(DrivingDestinationStore.self) private var store
     @AppStorage("drivingProvider") private var drivingProviderRaw = DrivingProvider.apple.rawValue
     @AppStorage("googleMapsApiKey") private var googleMapsApiKey = ""
 
+    let autoRefreshEnabled: Bool
+
     @State private var loadState: DrivingLoadState = .idle
+    @State private var lastCheckedAt: Date?
     @State private var showAdd = false
     @State private var editingDestination: DrivingDestination?
     @State private var swipedDestinationID: DrivingDestination.ID?
     @State private var now = Date()
 
     private let countdownTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
+    private static let autoRefreshInterval: Duration = .seconds(60)
+
+    init(autoRefreshEnabled: Bool = true) {
+        self.autoRefreshEnabled = autoRefreshEnabled
+    }
 
     private var provider: DrivingProvider {
         DrivingProvider(rawValue: drivingProviderRaw) ?? .apple
@@ -51,6 +60,10 @@ struct DrivingTimesTabView: View {
                     .padding(.horizontal)
                     .padding(.top, 16)
                     .padding(.bottom, 8)
+
+                refreshStatusCard
+                    .padding(.horizontal)
+                    .padding(.bottom, 10)
 
                 Divider()
                     .padding(.horizontal)
@@ -72,6 +85,9 @@ struct DrivingTimesTabView: View {
             now = tick
         }
         .task { await fetchTimes() }
+        .task(id: autoRefreshEnabled) {
+            await runAutoRefreshLoop()
+        }
         .onChange(of: store.all.count) { _, _ in
             Task { await fetchTimes() }
         }
@@ -113,6 +129,62 @@ struct DrivingTimesTabView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var refreshStatusCard: some View {
+        if loadState.isLoading || lastCheckedAt != nil {
+            HStack(spacing: 10) {
+                Image(systemName: loadState.isLoading ? "arrow.triangle.2.circlepath" : "clock.badge.checkmark")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(palette.accent)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(refreshStatusTitle)
+                        .font(.transit(13, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+
+                    Text(refreshStatusDetail)
+                        .font(.transit(12, weight: .medium))
+                        .foregroundStyle(palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer()
+
+                if loadState.isLoading {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                }
+            }
+            .padding(12)
+            .background(palette.mutedPanelBackground)
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(palette.accentStrong.opacity(0.16), lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+
+    private var refreshStatusTitle: String {
+        if loadState.isLoading {
+            return "Refreshing driving times…"
+        }
+
+        if let lastCheckedAt {
+            return "Last checked at \(lastCheckedAt.formatted(date: .omitted, time: .shortened))"
+        }
+
+        return "Driving times not checked yet"
+    }
+
+    private var refreshStatusDetail: String {
+        if loadState.isLoading {
+            return "Checking current travel times from your phone location."
+        }
+
+        return "Updates automatically every minute while this tab is open. Pull down or tap refresh to check now."
     }
 
     // MARK: - Content
@@ -245,6 +317,7 @@ struct DrivingTimesTabView: View {
 
     // MARK: - Actions
 
+    @MainActor
     private func fetchTimes() async {
         guard !loadState.isLoading else { return }
 
@@ -270,12 +343,23 @@ struct DrivingTimesTabView: View {
             }
 
             withAnimation { loadState = .loaded(results) }
+            lastCheckedAt = Date()
         } catch {
             if let previousEstimates {
                 withAnimation { loadState = .loaded(previousEstimates) }
             } else {
                 withAnimation { loadState = .failed(error.localizedDescription) }
             }
+        }
+    }
+
+    private func runAutoRefreshLoop() async {
+        guard autoRefreshEnabled else { return }
+
+        while !Task.isCancelled {
+            try? await Task.sleep(for: Self.autoRefreshInterval)
+            guard !Task.isCancelled, autoRefreshEnabled else { return }
+            await fetchTimes()
         }
     }
 

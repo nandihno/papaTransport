@@ -443,6 +443,125 @@ actor GTFSDatabase {
         }
     }
 
+    func trainRoutes() throws -> [TrainRoute] {
+        guard let db else { throw GTFSDBError.notReady }
+
+        let sql = """
+            SELECT route_id, route_short_name, route_long_name
+            FROM routes
+            WHERE route_type = 2
+              AND route_short_name IS NOT NULL
+              AND TRIM(route_short_name) <> ''
+            ORDER BY route_short_name COLLATE NOCASE ASC
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var results: [TrainRoute] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(
+                TrainRoute(
+                    routeId: textColumn(stmt, index: 0),
+                    routeShortName: textColumn(stmt, index: 1),
+                    routeLongName: textColumn(stmt, index: 2)
+                )
+            )
+        }
+
+        return results
+    }
+
+    func activeTrainTripCandidates(
+        routeShortName: String?,
+        directionId: Int?,
+        aroundSeconds: Int,
+        windowSeconds: Int = 45 * 60,
+        limit: Int = 120
+    ) throws -> [ActiveTrainTripCandidate] {
+        guard let db else { throw GTFSDBError.notReady }
+
+        let activeServiceIds = try todayActiveServiceIds()
+        guard !activeServiceIds.isEmpty else { return [] }
+
+        let servicePlaceholders = activeServiceIds.map { _ in "?" }.joined(separator: ",")
+        let routeClause = routeShortName == nil ? "" : "AND LOWER(r.route_short_name) = LOWER(?)"
+        let directionClause = directionId == nil ? "" : "AND t.direction_id = ?"
+
+        let sql = """
+            SELECT t.trip_id, t.route_id, r.route_short_name, r.route_long_name,
+                   t.trip_headsign, t.direction_id,
+                   MIN(IFNULL(st.departure_seconds, st.arrival_seconds)) AS first_seconds,
+                   MAX(IFNULL(st.arrival_seconds, st.departure_seconds)) AS last_seconds
+            FROM trips t
+            JOIN routes r ON t.route_id = r.route_id
+            JOIN stop_times st ON st.trip_id = t.trip_id
+            WHERE t.service_id IN (\(servicePlaceholders))
+              AND r.route_type = 2
+              \(routeClause)
+              \(directionClause)
+            GROUP BY t.trip_id, t.route_id, r.route_short_name, r.route_long_name,
+                     t.trip_headsign, t.direction_id
+            HAVING first_seconds <= ?
+               AND last_seconds >= ?
+            ORDER BY ABS(((first_seconds + last_seconds) / 2) - ?) ASC
+            LIMIT ?
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var index: Int32 = 1
+        for serviceId in activeServiceIds {
+            sqlite3_bind_text(stmt, index, (serviceId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+
+        if let routeShortName {
+            sqlite3_bind_text(stmt, index, (routeShortName as NSString).utf8String, -1, nil)
+            index += 1
+        }
+
+        if let directionId {
+            sqlite3_bind_int(stmt, index, Int32(directionId))
+            index += 1
+        }
+
+        sqlite3_bind_int(stmt, index, Int32(aroundSeconds + windowSeconds))
+        index += 1
+        sqlite3_bind_int(stmt, index, Int32(aroundSeconds - windowSeconds))
+        index += 1
+        sqlite3_bind_int(stmt, index, Int32(aroundSeconds))
+        index += 1
+        sqlite3_bind_int(stmt, index, Int32(limit))
+
+        var results: [ActiveTrainTripCandidate] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let routeShortName = textColumn(stmt, index: 2, fallback: "Train")
+            let routeLongName = textColumn(stmt, index: 3, fallback: routeShortName)
+            results.append(
+                ActiveTrainTripCandidate(
+                    tripId: textColumn(stmt, index: 0),
+                    routeId: textColumn(stmt, index: 1),
+                    routeShortName: routeShortName,
+                    routeLongName: routeLongName,
+                    tripHeadsign: optionalTextColumn(stmt, index: 4),
+                    directionId: Int(sqlite3_column_int(stmt, 5)),
+                    firstSeconds: Int(sqlite3_column_int(stmt, 6)),
+                    lastSeconds: Int(sqlite3_column_int(stmt, 7))
+                )
+            )
+        }
+
+        return results
+    }
+
     func trainSiblingStopIds(for stopId: String) throws -> [String] {
         guard let db else { throw GTFSDBError.notReady }
 
@@ -725,6 +844,25 @@ actor GTFSDatabase {
         return results
     }
 
+    struct TrainRoute: Identifiable {
+        let routeId: String
+        let routeShortName: String
+        let routeLongName: String
+
+        var id: String { routeId }
+    }
+
+    struct ActiveTrainTripCandidate {
+        let tripId: String
+        let routeId: String
+        let routeShortName: String
+        let routeLongName: String
+        let tripHeadsign: String?
+        let directionId: Int
+        let firstSeconds: Int
+        let lastSeconds: Int
+    }
+
     struct ScheduledDeparture {
         let tripId: String
         let stopId: String
@@ -909,6 +1047,16 @@ actor GTFSDatabase {
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
         defer { sqlite3_finalize(stmt) }
         return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
+    }
+
+    private func textColumn(_ stmt: OpaquePointer?, index: Int32, fallback: String = "") -> String {
+        guard let raw = sqlite3_column_text(stmt, index) else { return fallback }
+        return String(cString: raw)
+    }
+
+    private func optionalTextColumn(_ stmt: OpaquePointer?, index: Int32) -> String? {
+        guard let raw = sqlite3_column_text(stmt, index) else { return nil }
+        return String(cString: raw)
     }
 
     private func removeCachedDatabaseArtifacts() throws {

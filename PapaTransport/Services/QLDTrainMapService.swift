@@ -10,7 +10,6 @@ final class QLDTrainMapService: BusDataProviding {
 
     let provider: BusProvider = .queenslandTrainTransLink
 
-    private let tripUpdatesURL = URL(string: "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates/Rail")!
     private let alertsURL = URL(string: "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/alerts")!
     private let brisbaneTimeZone = TimeZone(identifier: "Australia/Brisbane")!
 
@@ -271,19 +270,7 @@ final class QLDTrainMapService: BusDataProviding {
     }
 
     private func fetchTripUpdates() async -> [String: GTFSRTTripUpdate] {
-        do {
-            let (data, _) = try await URLSession.shared.data(from: tripUpdatesURL)
-            let feed = try GTFSRTFeedMessage(data: data)
-            var byTripId: [String: GTFSRTTripUpdate] = [:]
-            for entity in feed.entities {
-                if let tripUpdate = entity.tripUpdate, !tripUpdate.tripId.isEmpty {
-                    byTripId[tripUpdate.tripId] = tripUpdate
-                }
-            }
-            return byTripId
-        } catch {
-            return [:]
-        }
+        await QueenslandTrainRealtimeService.shared.fetchTripUpdates()
     }
 
     // MARK: - Departure board

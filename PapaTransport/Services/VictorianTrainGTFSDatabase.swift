@@ -268,6 +268,125 @@ actor VictorianTrainGTFSDatabase {
         return ids.isEmpty ? [stopId] : ids
     }
 
+    func trainRoutes() throws -> [TrainRoute] {
+        guard let db else { throw GTFSDBError.notReady }
+
+        let sql = """
+            SELECT route_id, route_short_name, route_long_name
+            FROM routes
+            WHERE route_type = 400
+              AND route_short_name IS NOT NULL
+              AND TRIM(route_short_name) <> ''
+              AND route_short_name <> 'Replacement Bus'
+            ORDER BY route_short_name COLLATE NOCASE ASC
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var results: [TrainRoute] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(
+                TrainRoute(
+                    routeId: textColumn(stmt, index: 0),
+                    routeShortName: textColumn(stmt, index: 1),
+                    routeLongName: textColumn(stmt, index: 2)
+                )
+            )
+        }
+
+        return results
+    }
+
+    func activeTripCandidates(
+        routeShortName: String?,
+        directionId: Int?,
+        aroundSeconds: Int,
+        windowSeconds: Int = 45 * 60,
+        limit: Int = 120
+    ) throws -> [ActiveTripCandidate] {
+        guard let db else { throw GTFSDBError.notReady }
+
+        let activeServiceIds = try todayActiveServiceIds()
+        guard !activeServiceIds.isEmpty else { return [] }
+
+        let servicePlaceholders = activeServiceIds.map { _ in "?" }.joined(separator: ",")
+        let routeClause = routeShortName == nil ? "" : "AND LOWER(r.route_short_name) = LOWER(?)"
+        let directionClause = directionId == nil ? "" : "AND t.direction_id = ?"
+
+        let sql = """
+            SELECT t.trip_id, t.route_id, r.route_short_name, r.route_long_name,
+                   t.trip_headsign, t.direction_id,
+                   MIN(IFNULL(st.departure_seconds, st.arrival_seconds)) AS first_seconds,
+                   MAX(IFNULL(st.arrival_seconds, st.departure_seconds)) AS last_seconds
+            FROM trips t
+            JOIN routes r ON t.route_id = r.route_id
+            JOIN stop_times st ON st.trip_id = t.trip_id
+            WHERE t.service_id IN (\(servicePlaceholders))
+              AND r.route_type = 400
+              AND r.route_short_name <> 'Replacement Bus'
+              \(routeClause)
+              \(directionClause)
+            GROUP BY t.trip_id, t.route_id, r.route_short_name, r.route_long_name,
+                     t.trip_headsign, t.direction_id
+            HAVING first_seconds <= ?
+               AND last_seconds >= ?
+            ORDER BY ABS(((first_seconds + last_seconds) / 2) - ?) ASC
+            LIMIT ?
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var index: Int32 = 1
+        for serviceId in activeServiceIds {
+            sqlite3_bind_text(stmt, index, (serviceId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+
+        if let routeShortName {
+            sqlite3_bind_text(stmt, index, (routeShortName as NSString).utf8String, -1, nil)
+            index += 1
+        }
+
+        if let directionId {
+            sqlite3_bind_int(stmt, index, Int32(directionId))
+            index += 1
+        }
+
+        sqlite3_bind_int(stmt, index, Int32(aroundSeconds + windowSeconds))
+        index += 1
+        sqlite3_bind_int(stmt, index, Int32(aroundSeconds - windowSeconds))
+        index += 1
+        sqlite3_bind_int(stmt, index, Int32(aroundSeconds))
+        index += 1
+        sqlite3_bind_int(stmt, index, Int32(limit))
+
+        var results: [ActiveTripCandidate] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(
+                ActiveTripCandidate(
+                    tripId: textColumn(stmt, index: 0),
+                    routeId: textColumn(stmt, index: 1),
+                    routeShortName: textColumn(stmt, index: 2),
+                    routeLongName: textColumn(stmt, index: 3),
+                    tripHeadsign: optionalTextColumn(stmt, index: 4),
+                    directionId: Int(sqlite3_column_int(stmt, 5)),
+                    firstSeconds: Int(sqlite3_column_int(stmt, 6)),
+                    lastSeconds: Int(sqlite3_column_int(stmt, 7))
+                )
+            )
+        }
+
+        return results
+    }
+
     func departures(
         forStopIds stopIds: [String],
         afterSeconds: Int,
@@ -392,6 +511,25 @@ actor VictorianTrainGTFSDatabase {
     }
 
     // MARK: - Shared types (same shape as VictorianBusGTFSDatabase)
+
+    struct TrainRoute: Identifiable {
+        let routeId: String
+        let routeShortName: String
+        let routeLongName: String
+
+        var id: String { routeId }
+    }
+
+    struct ActiveTripCandidate {
+        let tripId: String
+        let routeId: String
+        let routeShortName: String
+        let routeLongName: String
+        let tripHeadsign: String?
+        let directionId: Int
+        let firstSeconds: Int
+        let lastSeconds: Int
+    }
 
     struct ScheduledDeparture {
         let tripId: String

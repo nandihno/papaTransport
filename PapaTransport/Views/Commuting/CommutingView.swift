@@ -83,11 +83,24 @@ struct CommutingView: View {
     }
 
     private var usesImmersiveMapLayout: Bool {
-        if selectedTab == 2 { return false }
+        if selectedTab == 2 || selectedTab == 3 { return false }
         if selectedTab == 0 {
             return shouldShowBusCard
         }
         return true
+    }
+
+    private var navigationTitle: String {
+        switch selectedTab {
+        case 0:
+            return "Bus"
+        case 1:
+            return "Trains"
+        case 2:
+            return "Locate"
+        default:
+            return "Driving"
+        }
     }
 
     private var busStatusMessage: String? {
@@ -95,9 +108,42 @@ struct CommutingView: View {
         case .idle:
             return nil
         case .loading:
-            return "Loading nearby departures…"
+            return "Refreshing nearby departures…"
         case .loaded(let snapshot):
-            return "Last updated at \(snapshot.fetchedAt.formatted(date: .omitted, time: .shortened))"
+            return "Last checked at \(snapshot.fetchedAt.formatted(date: .omitted, time: .shortened))"
+        }
+    }
+
+    private var busStatusDetail: String? {
+        switch loadState {
+        case .idle:
+            return nil
+        case .loading:
+            return "Looking for current departures near your map position."
+        case .loaded:
+            return "Updates automatically every minute while this tab is open. Pull down or move the map to check a different area."
+        }
+    }
+
+    private var trainStatusMessage: String? {
+        switch loadState {
+        case .idle:
+            return nil
+        case .loading:
+            return "Refreshing train information…"
+        case .loaded(let snapshot):
+            return "Last checked at \(snapshot.fetchedAt.formatted(date: .omitted, time: .shortened))"
+        }
+    }
+
+    private var trainStatusDetail: String? {
+        switch loadState {
+        case .idle:
+            return nil
+        case .loading:
+            return "Updating line status, planned works, and nearby station departures."
+        case .loaded:
+            return "Updates automatically every minute while this tab is open. Pull down or move the map to check a different area."
         }
     }
 
@@ -124,8 +170,14 @@ struct CommutingView: View {
                         Label("Trains", systemImage: "tram.fill")
                     }
 
-                drivingTab
+                locateTab
                     .tag(2)
+                    .tabItem {
+                        Label("Locate", systemImage: "location.north.line.fill")
+                    }
+
+                drivingTab
+                    .tag(3)
                     .tabItem {
                         Label("Driving", systemImage: "car.fill")
                     }
@@ -139,7 +191,7 @@ struct CommutingView: View {
                 }
             }
             .toolbar(usesImmersiveMapLayout ? .hidden : .visible, for: .navigationBar)
-            .navigationTitle(selectedTab == 0 ? "Bus" : selectedTab == 1 ? "Trains" : "Driving")
+            .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(selectedTab == 0 ? .large : .inline)
             .toolbar {
                 if !usesImmersiveMapLayout {
@@ -169,7 +221,9 @@ struct CommutingView: View {
                     initialBusInfo: loadState.snapshot?.busInfo,
                     onOpenSettings: { showSettings = true },
                     onRefresh: { await performFetch() },
+                    autoRefreshEnabled: selectedTab == 0,
                     statusMessage: busStatusMessage,
+                    statusDetail: busStatusDetail,
                     progressStage: gtfsProgressStage,
                     progressDetail: gtfsProgressDetail
                 )
@@ -199,22 +253,34 @@ struct CommutingView: View {
                     provider: .victorianTrainPTV,
                     trainInfo: loadState.snapshot?.trainInfo ?? placeholderTrainInfo,
                     onOpenSettings: { showSettings = true },
-                    onRefresh: { await performFetch() }
+                    onRefresh: { await performFetch() },
+                    autoRefreshEnabled: selectedTab == 1,
+                    statusMessage: trainStatusMessage,
+                    statusDetail: trainStatusDetail
                 )
             } else {
                 TrainMapExplorerView(
                     provider: .queenslandTrainTransLink,
                     onOpenSettings: { showSettings = true },
-                    onRefresh: { await performFetch() }
+                    onRefresh: { await performFetch() },
+                    autoRefreshEnabled: selectedTab == 1,
+                    statusMessage: trainStatusMessage,
+                    statusDetail: trainStatusDetail
                 )
             }
         }
     }
 
+    // MARK: - Locate Tab
+
+    private var locateTab: some View {
+        TrainLocateMeView()
+    }
+
     // MARK: - Driving Tab
 
     private var drivingTab: some View {
-        DrivingTimesTabView()
+        DrivingTimesTabView(autoRefreshEnabled: selectedTab == 3)
             .environment(drivingStore)
     }
 
@@ -332,4 +398,3 @@ private struct CommuteConfigurationCard: View {
         }
     }
 }
-
