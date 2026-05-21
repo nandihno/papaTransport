@@ -17,8 +17,12 @@ final class DrivingTimeService {
 
     private init() {}
 
-    func fetchDrivingTimes(provider: DrivingProvider, googleApiKey: String) async throws -> [DrivingTimeEstimate] {
-        let destinations = DrivingDestinationStore.shared.all
+    func fetchDrivingTimes(
+        provider: DrivingProvider,
+        googleApiKey: String,
+        destinations: [DrivingDestination]? = nil
+    ) async throws -> [DrivingTimeEstimate] {
+        let destinations = destinations ?? DrivingDestinationStore.shared.all
         guard !destinations.isEmpty else { return [] }
         let trimmedGoogleApiKey = googleApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
 

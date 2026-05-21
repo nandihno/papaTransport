@@ -510,6 +510,7 @@ struct TrainMapExplorerView: View {
         ForEach(stops) { stop in
             TrainStationSection(
                 stop: stop,
+                provider: provider,
                 isExpanded: selectedStopID == stop.id
             ) {
                 toggleSelection(for: stop.id)
@@ -1002,12 +1003,17 @@ private extension TrainMapExplorerView {
 
 private struct TrainStationSection: View {
     let stop: NearbyBusStop
+    let provider: BusProvider
     let isExpanded: Bool
     let onToggleExpanded: () -> Void
     let onSelectDeparture: (BusDeparture) -> Void
 
     @Environment(\.themePalette) private var palette
     @State private var expandedLineNames: Set<String> = []
+    @State private var liveDepartures: [TrainDeparture] = []
+    @State private var liveDeparturesError: String?
+    @State private var isLoadingLive = false
+    @State private var hasLoadedLive = false
 
     private var windowedDepartures: [BusDeparture] {
         stop.departures
@@ -1077,6 +1083,15 @@ private struct TrainStationSection: View {
             if isExpanded {
                 Divider()
 
+                if provider == .victorianTrainPTV {
+                    LiveMetroDeparturesBlock(
+                        departures: liveDepartures,
+                        isLoading: isLoadingLive,
+                        errorMessage: liveDeparturesError,
+                        hasLoaded: hasLoadedLive
+                    )
+                }
+
                 if lineGroups.isEmpty {
                     Text("No departures found for this station within \("next 2 hours").")
                         .font(.caption)
@@ -1111,6 +1126,24 @@ private struct TrainStationSection: View {
                 expandedLineNames.removeAll()
             }
         }
+        .task(id: isExpanded) {
+            await loadLiveDeparturesIfNeeded()
+        }
+    }
+
+    private func loadLiveDeparturesIfNeeded() async {
+        guard isExpanded, provider == .victorianTrainPTV, !hasLoadedLive else { return }
+        isLoadingLive = true
+        liveDeparturesError = nil
+        defer { isLoadingLive = false }
+
+        do {
+            let results = try await TrainService.shared.fetchLiveDepartures(station: stop.stopName)
+            liveDepartures = results
+            hasLoadedLive = true
+        } catch {
+            liveDeparturesError = error.localizedDescription
+        }
     }
 
     private func lineName(for departure: BusDeparture) -> String {
@@ -1124,6 +1157,98 @@ private struct TrainStationSection: View {
                 expandedLineNames.remove(lineName)
             } else {
                 expandedLineNames.insert(lineName)
+            }
+        }
+    }
+}
+
+private struct LiveMetroDeparturesBlock: View {
+    let departures: [TrainDeparture]
+    let isLoading: Bool
+    let errorMessage: String?
+    let hasLoaded: Bool
+
+    @Environment(\.themePalette) private var palette
+
+    private var inbound:  [TrainDeparture] { departures.filter {  $0.isToCity } }
+    private var outbound: [TrainDeparture] { departures.filter { !$0.isToCity } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "bolt.horizontal.circle.fill")
+                    .foregroundStyle(palette.accent)
+                Text("Live ETA / ETD")
+                    .font(.transit(13, weight: .bold))
+                    .foregroundStyle(palette.textPrimary)
+                Text("MetroTrains")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(palette.surfaceRaised, in: Capsule())
+                    .foregroundStyle(palette.textSecondary)
+                Spacer()
+                if isLoading {
+                    ProgressView().scaleEffect(0.7)
+                }
+            }
+
+            if let errorMessage, !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.warning)
+            } else if !isLoading && hasLoaded && departures.isEmpty {
+                Text("No live MetroTrains departures for this station.")
+                    .font(.caption2)
+                    .foregroundStyle(palette.textTertiary)
+                    .italic()
+            } else if !departures.isEmpty {
+                directionBlock(label: "Inbound → City",
+                               symbol: "arrow.up.circle.fill",
+                               color: AppTheme.info,
+                               rows: inbound)
+                directionBlock(label: "Outbound",
+                               symbol: "arrow.down.circle.fill",
+                               color: palette.accent,
+                               rows: outbound)
+            }
+        }
+        .padding(10)
+        .background(palette.surfaceRaised.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func directionBlock(label: String, symbol: String, color: Color, rows: [TrainDeparture]) -> some View {
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
+                    Image(systemName: symbol).foregroundStyle(color)
+                    Text(label).foregroundStyle(color)
+                }
+                .font(.caption2.weight(.semibold))
+
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 3) {
+                    GridRow {
+                        Text("Time").gridColumnAlignment(.leading)
+                        Text("Plat").gridColumnAlignment(.center)
+                        Text("ETA").gridColumnAlignment(.leading)
+                        Text("ETD").gridColumnAlignment(.leading)
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(palette.textTertiary)
+
+                    ForEach(rows) { dep in
+                        GridRow {
+                            Text(dep.scheduledTimeStr)
+                            Text(dep.estimatedPlatform.isEmpty ? dep.platform : dep.estimatedPlatform)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                            Text(dep.estimatedArrivalStr)
+                            Text(dep.estimatedDepartureStr)
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(palette.textSecondary)
+                    }
+                }
             }
         }
     }

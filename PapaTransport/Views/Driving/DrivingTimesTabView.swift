@@ -4,7 +4,9 @@
 //
 
 import Combine
+import EventKit
 import SwiftUI
+import UIKit
 
 private enum DrivingLoadState {
     case idle
@@ -37,8 +39,11 @@ struct DrivingTimesTabView: View {
     @State private var editingDestination: DrivingDestination?
     @State private var swipedDestinationID: DrivingDestination.ID?
     @State private var now = Date()
+    @State private var calendarDestinations: [DrivingDestination] = []
+    @State private var calendarAuthStatus: EKAuthorizationStatus = CalendarDestinationService.shared.authorizationStatus
 
     private let countdownTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
+    private let calendarChangedPublisher = NotificationCenter.default.publisher(for: .EKEventStoreChanged)
     private static let autoRefreshInterval: Duration = .seconds(60)
 
     init(autoRefreshEnabled: Bool = true) {
@@ -51,6 +56,17 @@ struct DrivingTimesTabView: View {
 
     private var poweredByText: String {
         provider == .google ? "Powered by Google Maps" : "Powered by Apple Maps"
+    }
+
+    private var isCalendarAuthorized: Bool {
+        if #available(iOS 17.0, *) {
+            return calendarAuthStatus == .fullAccess || calendarAuthStatus == .authorized
+        }
+        return calendarAuthStatus == .authorized
+    }
+
+    private var combinedDestinations: [DrivingDestination] {
+        calendarDestinations + store.all
     }
 
     var body: some View {
@@ -84,7 +100,13 @@ struct DrivingTimesTabView: View {
         .onReceive(countdownTimer) { tick in
             now = tick
         }
-        .task { await fetchTimes() }
+        .onReceive(calendarChangedPublisher) { _ in
+            Task { await refreshCalendarAndTimes() }
+        }
+        .task {
+            await loadCalendarDestinations()
+            await fetchTimes()
+        }
         .task(id: autoRefreshEnabled) {
             await runAutoRefreshLoop()
         }
@@ -191,11 +213,105 @@ struct DrivingTimesTabView: View {
 
     @ViewBuilder
     private var contentArea: some View {
-        if store.all.isEmpty {
-            emptyState
-        } else {
-            destinationsList
+        VStack(alignment: .leading, spacing: 16) {
+            calendarBanner
+
+            if combinedDestinations.isEmpty {
+                emptyState
+            } else {
+                destinationsList
+            }
         }
+    }
+
+    @ViewBuilder
+    private var calendarBanner: some View {
+        switch calendarAuthStatus {
+        case .notDetermined:
+            calendarPromptCard
+        case .denied, .restricted:
+            calendarDeniedCard
+        default:
+            EmptyView()
+        }
+    }
+
+    private var calendarPromptCard: some View {
+        Button {
+            Task {
+                _ = await CalendarDestinationService.shared.requestAccess()
+                calendarAuthStatus = CalendarDestinationService.shared.authorizationStatus
+                await refreshCalendarAndTimes()
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "calendar.badge.plus")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(palette.accent)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Show today's calendar events")
+                        .font(.transit(13, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+                    Text("Suggest events with a location as driving destinations.")
+                        .font(.transit(12, weight: .medium))
+                        .foregroundStyle(palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(palette.textTertiary)
+            }
+            .padding(12)
+            .background(palette.mutedPanelBackground)
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(palette.accentStrong.opacity(0.16), lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var calendarDeniedCard: some View {
+        Button {
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                UIApplication.shared.open(url)
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "calendar.badge.exclamationmark")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.warning)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Calendar access disabled")
+                        .font(.transit(13, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+                    Text("Enable it in Settings to surface today's calendar events as destinations.")
+                        .font(.transit(12, weight: .medium))
+                        .foregroundStyle(palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(palette.textTertiary)
+            }
+            .padding(12)
+            .background(palette.mutedPanelBackground)
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(AppTheme.warning.opacity(0.24), lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     private var emptyState: some View {
@@ -225,35 +341,42 @@ struct DrivingTimesTabView: View {
         .padding(.horizontal, 24)
     }
 
+    @ViewBuilder
     private var destinationsList: some View {
-        CardContainer {
-            VStack(alignment: .leading, spacing: 0) {
-                // Provider attribution
-                Text(poweredByText)
-                    .font(.transit(11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.bottom, 8)
-
-                switch loadState {
-                case .idle:
-                    loadingPlaceholder
-
-                case .loading:
-                    if let estimates = loadState.estimates {
-                        estimatesView(estimates)
-                    } else {
+        VStack(alignment: .trailing, spacing: 6) {
+            CardContainer {
+                VStack(alignment: .leading, spacing: 0) {
+                    switch loadState {
+                    case .idle:
                         loadingPlaceholder
+
+                    case .loading:
+                        if let estimates = loadState.estimates {
+                            estimatesView(orderedEstimates(estimates))
+                        } else {
+                            loadingPlaceholder
+                        }
+
+                    case .loaded(let estimates):
+                        estimatesView(orderedEstimates(estimates))
+
+                    case .failed(let message):
+                        errorView(message: message)
                     }
-
-                case .loaded(let estimates):
-                    estimatesView(estimates)
-
-                case .failed(let message):
-                    errorView(message: message)
                 }
             }
+
+            Text(poweredByText)
+                .font(.transit(11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.trailing, 4)
         }
+    }
+
+    private func orderedEstimates(_ estimates: [DrivingTimeEstimate]) -> [DrivingTimeEstimate] {
+        let calendar = estimates.filter { $0.destination.isCalendarSourced }
+        let saved = estimates.filter { !$0.destination.isCalendarSourced }
+        return calendar + saved
     }
 
     @ViewBuilder
@@ -263,6 +386,7 @@ struct DrivingTimesTabView: View {
                 estimate: estimate,
                 provider: provider,
                 now: now,
+                allowSwipeActions: !estimate.destination.isCalendarSourced,
                 isOpen: Binding(
                     get: { swipedDestinationID == estimate.destination.id },
                     set: { swipedDestinationID = $0 ? estimate.destination.id : nil }
@@ -282,7 +406,7 @@ struct DrivingTimesTabView: View {
 
     private var loadingPlaceholder: some View {
         VStack(spacing: 16) {
-            ForEach(store.all) { destination in
+            ForEach(combinedDestinations) { destination in
                 HStack {
                     VStack(alignment: .leading, spacing: 6) {
                         RoundedRectangle(cornerRadius: 4)
@@ -322,12 +446,14 @@ struct DrivingTimesTabView: View {
         guard !loadState.isLoading else { return }
 
         let previousEstimates = loadState.estimates
+        let destinations = combinedDestinations
         withAnimation { loadState = .loading(previous: previousEstimates) }
 
         do {
             let results = try await DrivingTimeService.shared.fetchDrivingTimes(
                 provider: provider,
-                googleApiKey: googleMapsApiKey
+                googleApiKey: googleMapsApiKey,
+                destinations: destinations
             )
 
             if Task.isCancelled, let previousEstimates {
@@ -359,8 +485,28 @@ struct DrivingTimesTabView: View {
         while !Task.isCancelled {
             try? await Task.sleep(for: Self.autoRefreshInterval)
             guard !Task.isCancelled, autoRefreshEnabled else { return }
+            await loadCalendarDestinations()
             await fetchTimes()
         }
+    }
+
+    @MainActor
+    private func loadCalendarDestinations() async {
+        calendarAuthStatus = CalendarDestinationService.shared.authorizationStatus
+        guard isCalendarAuthorized else {
+            if !calendarDestinations.isEmpty { calendarDestinations = [] }
+            return
+        }
+        let fetched = await CalendarDestinationService.shared.fetchUpcomingTodayDestinations()
+        if fetched != calendarDestinations {
+            calendarDestinations = fetched
+        }
+    }
+
+    @MainActor
+    private func refreshCalendarAndTimes() async {
+        await loadCalendarDestinations()
+        await fetchTimes()
     }
 
     private func deleteDestination(_ destination: DrivingDestination) {
@@ -374,6 +520,7 @@ private struct SwipeableDrivingDestinationRowView: View {
     let estimate: DrivingTimeEstimate
     let provider: DrivingProvider
     let now: Date
+    let allowSwipeActions: Bool
     @Binding var isOpen: Bool
     let onEdit: () -> Void
     let onDelete: () -> Void
@@ -384,27 +531,40 @@ private struct SwipeableDrivingDestinationRowView: View {
     private let actionWidth: CGFloat = 152
 
     private var currentOffset: CGFloat {
+        guard allowSwipeActions else { return 0 }
         let baseOffset = isOpen ? -actionWidth : 0
         return min(0, max(-actionWidth, baseOffset + dragTranslation))
     }
 
     var body: some View {
         ZStack(alignment: .trailing) {
-            actionButtons
-                .opacity(currentOffset < -8 ? 1 : 0)
-                .allowsHitTesting(isOpen)
+            if allowSwipeActions {
+                actionButtons
+                    .opacity(currentOffset < -8 ? 1 : 0)
+                    .allowsHitTesting(isOpen)
+            }
 
-            DrivingDestinationRowView(estimate: estimate, provider: provider, now: now)
-                .background {
-                    if currentOffset < -1 {
-                        palette.cardBackground
-                    }
-                }
-                .offset(x: currentOffset)
-                .gesture(swipeGesture)
+            destinationRow
         }
         .clipped()
         .animation(.snappy(duration: 0.2), value: isOpen)
+    }
+
+    @ViewBuilder
+    private var destinationRow: some View {
+        let base = DrivingDestinationRowView(estimate: estimate, provider: provider, now: now)
+            .background {
+                if currentOffset < -1 {
+                    palette.cardBackground
+                }
+            }
+            .offset(x: currentOffset)
+
+        if allowSwipeActions {
+            base.gesture(swipeGesture)
+        } else {
+            base
+        }
     }
 
     private var actionButtons: some View {

@@ -163,6 +163,24 @@ final class TrainService {
         )
     }
 
+    // MARK: - Live departures (single station, departures.json only)
+
+    /// Fetch upcoming live departures for a single station from `departures.json`,
+    /// both directions, sorted ascending. Returns an empty array if the station
+    /// name doesn't match any Melbourne metro station.
+    func fetchLiveDepartures(station: String) async throws -> [TrainDeparture] {
+        let trimmed = station.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let (data, _) = try await URLSession.shared.data(from: departuresURL)
+        let response = try JSONDecoder().decode(DeparturesAPIResponse.self, from: data)
+        return filterAndMapDepartures(response.entries,
+                                     station: trimmed,
+                                     currentSeconds: Self.secondsSinceMidnight(),
+                                     toCityOnly: nil,
+                                     limit: 12)
+    }
+
     // MARK: - Timetable (Plan Ahead)
 
     /// Fetch the full operational timetable for a line from the static S3 endpoint.

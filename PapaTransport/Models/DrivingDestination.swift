@@ -6,6 +6,11 @@
 import CoreLocation
 import Foundation
 
+enum DrivingDestinationSource: Equatable {
+    case saved
+    case calendar(eventID: String)
+}
+
 struct DrivingDestination: Identifiable, Codable, Equatable {
     let id: UUID
     let name: String
@@ -17,6 +22,12 @@ struct DrivingDestination: Identifiable, Codable, Equatable {
     var targetArrivalHour: Int?
     /// Minute component (0–59) of the user's target arrival time, if set.
     var targetArrivalMinute: Int?
+    /// Where this destination originated. Calendar-sourced destinations are transient.
+    var source: DrivingDestinationSource = .saved
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, address, latitude, longitude, title, targetArrivalHour, targetArrivalMinute
+    }
 
     init(
         id: UUID = UUID(),
@@ -26,7 +37,8 @@ struct DrivingDestination: Identifiable, Codable, Equatable {
         longitude: Double,
         title: String? = nil,
         targetArrivalHour: Int? = nil,
-        targetArrivalMinute: Int? = nil
+        targetArrivalMinute: Int? = nil,
+        source: DrivingDestinationSource = .saved
     ) {
         self.id = id
         self.name = name
@@ -36,6 +48,12 @@ struct DrivingDestination: Identifiable, Codable, Equatable {
         self.title = title
         self.targetArrivalHour = targetArrivalHour
         self.targetArrivalMinute = targetArrivalMinute
+        self.source = source
+    }
+
+    var isCalendarSourced: Bool {
+        if case .calendar = source { return true }
+        return false
     }
 
     /// Returns the user-provided title if set, otherwise the resolved name.

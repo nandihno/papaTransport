@@ -26,6 +26,10 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCalendarsUsageDescription</key>
+	<string>PapaTransport reads today's upcoming calendar events with a location to suggest them as driving destinations.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>PapaTransport reads today's upcoming calendar events with a location to suggest them as driving destinations.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>PapaTransport uses your location to show nearby public transport and estimate your train position.</string>
 	<key>UIApplicationSceneManifest</key>

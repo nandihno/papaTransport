@@ -56,9 +56,17 @@ struct DrivingDestinationRowView: View {
         HStack(alignment: .top, spacing: 12) {
             // Left: name + address + countdown
             VStack(alignment: .leading, spacing: 4) {
-                Text(estimate.destination.displayName)
-                    .font(.transit(18, weight: .bold))
-                    .foregroundStyle(palette.textPrimary)
+                HStack(spacing: 6) {
+                    if estimate.destination.isCalendarSourced {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(palette.accent)
+                            .accessibilityLabel("From calendar")
+                    }
+                    Text(estimate.destination.displayName)
+                        .font(.transit(18, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+                }
 
                 Text(estimate.destination.displaySubtitle)
                     .font(.transit(13, weight: .medium))
