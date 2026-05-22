@@ -98,8 +98,10 @@ struct CommutingView: View {
             return "Trains"
         case 2:
             return "Locate"
-        default:
+        case 3:
             return "Driving"
+        default:
+            return "Plan"
         }
     }
 
@@ -180,6 +182,12 @@ struct CommutingView: View {
                     .tag(3)
                     .tabItem {
                         Label("Driving", systemImage: "car.fill")
+                    }
+
+                routePlannerTab
+                    .tag(4)
+                    .tabItem {
+                        Label("Plan", systemImage: "map.fill")
                     }
             }
             .onChange(of: selectedTab) { _, _ in
@@ -282,6 +290,12 @@ struct CommutingView: View {
     private var drivingTab: some View {
         DrivingTimesTabView(autoRefreshEnabled: selectedTab == 3)
             .environment(drivingStore)
+    }
+
+    // MARK: - Route Planner Tab
+
+    private var routePlannerTab: some View {
+        RoutePlannerView()
     }
 
     @ViewBuilder

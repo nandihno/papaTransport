@@ -148,6 +148,59 @@ actor VictorianBusGTFSDatabase {
         return results.sorted { $0.1 < $1.1 }
     }
 
+    func routePlannerStopCandidates(
+        latitude: Double,
+        longitude: Double,
+        radiusMeters: Double = 650,
+        limit: Int = 8
+    ) throws -> [(stop: GTFSStop, distanceMeters: Double)] {
+        guard let db else { throw GTFSDBError.notReady }
+
+        let latDelta = radiusMeters / 111_000.0
+        let lonDelta = radiusMeters / (111_000.0 * cos(latitude * .pi / 180.0))
+        let sql = """
+            SELECT stop_id, stop_name, stop_code, stop_lat, stop_lon, location_type, parent_station
+            FROM stops
+            WHERE route_type IN (3, 701)
+              AND location_type = 0
+              AND stop_lat BETWEEN ? AND ?
+              AND stop_lon BETWEEN ? AND ?
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        sqlite3_bind_double(stmt, 1, latitude - latDelta)
+        sqlite3_bind_double(stmt, 2, latitude + latDelta)
+        sqlite3_bind_double(stmt, 3, longitude - lonDelta)
+        sqlite3_bind_double(stmt, 4, longitude + lonDelta)
+
+        let selectedLocation = CLLocation(latitude: latitude, longitude: longitude)
+        var results: [(GTFSStop, Double)] = []
+
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let stop = GTFSStop(
+                stopId: String(cString: sqlite3_column_text(stmt, 0)),
+                stopName: String(cString: sqlite3_column_text(stmt, 1)),
+                stopCode: sqlite3_column_text(stmt, 2).map { String(cString: $0) },
+                stopLat: sqlite3_column_double(stmt, 3),
+                stopLon: sqlite3_column_double(stmt, 4),
+                locationType: Int(sqlite3_column_int(stmt, 5)),
+                parentStation: sqlite3_column_text(stmt, 6).map { String(cString: $0) }
+            )
+            let stopLocation = CLLocation(latitude: stop.stopLat, longitude: stop.stopLon)
+            let distance = selectedLocation.distance(from: stopLocation)
+            if distance <= radiusMeters {
+                results.append((stop, distance))
+            }
+        }
+
+        return Array(results.sorted { $0.1 < $1.1 }.prefix(limit))
+    }
+
     func departures(
         forStopIds stopIds: [String],
         afterSeconds: Int,
@@ -260,6 +313,421 @@ actor VictorianBusGTFSDatabase {
                     stopSequence: Int(sqlite3_column_int(stmt, 9))
                 )
             )
+        }
+
+        return results
+    }
+
+    func directRoutePlanCandidates(
+        originStopIds: [String],
+        destinationStopIds: [String],
+        afterSeconds: Int,
+        limit: Int = 12
+    ) throws -> [DirectRoutePlanCandidate] {
+        guard let db else { throw GTFSDBError.notReady }
+        guard !originStopIds.isEmpty, !destinationStopIds.isEmpty else { return [] }
+
+        let activeServiceIds = try todayActiveServiceIds()
+        guard !activeServiceIds.isEmpty else { return [] }
+
+        let originPlaceholders = originStopIds.map { _ in "?" }.joined(separator: ",")
+        let destinationPlaceholders = destinationStopIds.map { _ in "?" }.joined(separator: ",")
+        let servicePlaceholders = activeServiceIds.map { _ in "?" }.joined(separator: ",")
+        let sql = """
+            SELECT origin_st.trip_id,
+                   t.route_id, r.route_short_name, r.route_long_name,
+                   t.trip_headsign, t.direction_id, r.route_type,
+                   origin_st.stop_id, origin_s.stop_name, origin_s.stop_code,
+                   origin_s.stop_lat, origin_s.stop_lon,
+                   IFNULL(origin_st.departure_time, origin_st.arrival_time) AS origin_time,
+                   IFNULL(origin_st.departure_seconds, origin_st.arrival_seconds) AS origin_seconds,
+                   origin_st.stop_sequence,
+                   destination_st.stop_id, destination_s.stop_name, destination_s.stop_code,
+                   destination_s.stop_lat, destination_s.stop_lon,
+                   IFNULL(destination_st.arrival_time, destination_st.departure_time) AS destination_time,
+                   IFNULL(destination_st.arrival_seconds, destination_st.departure_seconds) AS destination_seconds,
+                   destination_st.stop_sequence
+            FROM stop_times origin_st
+            JOIN stop_times destination_st
+              ON destination_st.trip_id = origin_st.trip_id
+             AND destination_st.stop_sequence > origin_st.stop_sequence
+            JOIN trips t ON t.trip_id = origin_st.trip_id
+            JOIN routes r ON r.route_id = t.route_id
+            JOIN stops origin_s ON origin_s.stop_id = origin_st.stop_id
+            JOIN stops destination_s ON destination_s.stop_id = destination_st.stop_id
+            WHERE origin_st.stop_id IN (\(originPlaceholders))
+              AND destination_st.stop_id IN (\(destinationPlaceholders))
+              AND t.service_id IN (\(servicePlaceholders))
+              AND r.route_type IN (3, 701)
+              AND IFNULL(origin_st.departure_seconds, origin_st.arrival_seconds) >= ?
+            ORDER BY origin_seconds ASC, destination_seconds ASC
+            LIMIT ?
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var index: Int32 = 1
+        for stopId in originStopIds {
+            sqlite3_bind_text(stmt, index, (stopId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+        for stopId in destinationStopIds {
+            sqlite3_bind_text(stmt, index, (stopId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+        for serviceId in activeServiceIds {
+            sqlite3_bind_text(stmt, index, (serviceId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+        sqlite3_bind_int(stmt, index, Int32(afterSeconds))
+        index += 1
+        sqlite3_bind_int(stmt, index, Int32(limit))
+
+        var results: [DirectRoutePlanCandidate] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(
+                DirectRoutePlanCandidate(
+                    tripId: String(cString: sqlite3_column_text(stmt, 0)),
+                    routeId: String(cString: sqlite3_column_text(stmt, 1)),
+                    routeShortName: sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? "",
+                    routeLongName: sqlite3_column_text(stmt, 3).map { String(cString: $0) } ?? "",
+                    tripHeadsign: sqlite3_column_text(stmt, 4).map { String(cString: $0) },
+                    directionId: Int(sqlite3_column_int(stmt, 5)),
+                    routeType: Int(sqlite3_column_int(stmt, 6)),
+                    originStopId: String(cString: sqlite3_column_text(stmt, 7)),
+                    originStopName: String(cString: sqlite3_column_text(stmt, 8)),
+                    originStopCode: sqlite3_column_text(stmt, 9).map { String(cString: $0) },
+                    originLat: sqlite3_column_double(stmt, 10),
+                    originLon: sqlite3_column_double(stmt, 11),
+                    originTime: sqlite3_column_text(stmt, 12).map { String(cString: $0) },
+                    originSeconds: Int(sqlite3_column_int(stmt, 13)),
+                    originSequence: Int(sqlite3_column_int(stmt, 14)),
+                    destinationStopId: String(cString: sqlite3_column_text(stmt, 15)),
+                    destinationStopName: String(cString: sqlite3_column_text(stmt, 16)),
+                    destinationStopCode: sqlite3_column_text(stmt, 17).map { String(cString: $0) },
+                    destinationLat: sqlite3_column_double(stmt, 18),
+                    destinationLon: sqlite3_column_double(stmt, 19),
+                    destinationTime: sqlite3_column_text(stmt, 20).map { String(cString: $0) },
+                    destinationSeconds: Int(sqlite3_column_int(stmt, 21)),
+                    destinationSequence: Int(sqlite3_column_int(stmt, 22))
+                )
+            )
+        }
+
+        return results
+    }
+
+    func routePlanTripStops(
+        tripId: String,
+        fromSequence: Int,
+        toSequence: Int
+    ) throws -> [RoutePlanTripPatternStop] {
+        guard let db else { throw GTFSDBError.notReady }
+
+        let sql = """
+            SELECT st.stop_id, s.stop_name, s.stop_code, s.stop_lat, s.stop_lon,
+                   IFNULL(st.arrival_time, st.departure_time) AS scheduled_time,
+                   IFNULL(st.arrival_seconds, st.departure_seconds) AS scheduled_seconds,
+                   st.stop_sequence
+            FROM stop_times st
+            JOIN stops s ON st.stop_id = s.stop_id
+            JOIN trips t ON st.trip_id = t.trip_id
+            JOIN routes r ON t.route_id = r.route_id
+            WHERE st.trip_id = ?
+              AND st.stop_sequence BETWEEN ? AND ?
+              AND r.route_type IN (3, 701)
+            ORDER BY st.stop_sequence ASC
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        sqlite3_bind_text(stmt, 1, (tripId as NSString).utf8String, -1, nil)
+        sqlite3_bind_int(stmt, 2, Int32(fromSequence))
+        sqlite3_bind_int(stmt, 3, Int32(toSequence))
+
+        var results: [RoutePlanTripPatternStop] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(
+                RoutePlanTripPatternStop(
+                    stopId: String(cString: sqlite3_column_text(stmt, 0)),
+                    stopName: String(cString: sqlite3_column_text(stmt, 1)),
+                    stopCode: sqlite3_column_text(stmt, 2).map { String(cString: $0) },
+                    stopLat: sqlite3_column_double(stmt, 3),
+                    stopLon: sqlite3_column_double(stmt, 4),
+                    scheduledTime: sqlite3_column_text(stmt, 5).map { String(cString: $0) },
+                    scheduledSeconds: Int(sqlite3_column_int(stmt, 6)),
+                    stopSequence: Int(sqlite3_column_int(stmt, 7))
+                )
+            )
+        }
+
+        return results
+    }
+
+    func reachableRoutePlanLegCandidates(
+        originStopIds: [String],
+        afterSeconds: Int,
+        horizonSeconds: Int = 45 * 60,
+        limit: Int = 80
+    ) throws -> [DirectRoutePlanCandidate] {
+        guard let db else { throw GTFSDBError.notReady }
+        guard !originStopIds.isEmpty else { return [] }
+
+        let activeServiceIds = try todayActiveServiceIds()
+        guard !activeServiceIds.isEmpty else { return [] }
+
+        let originPlaceholders = originStopIds.map { _ in "?" }.joined(separator: ",")
+        let servicePlaceholders = activeServiceIds.map { _ in "?" }.joined(separator: ",")
+        let sql = """
+            SELECT origin_st.trip_id,
+                   t.route_id, r.route_short_name, r.route_long_name,
+                   t.trip_headsign, t.direction_id, r.route_type,
+                   origin_st.stop_id, origin_s.stop_name, origin_s.stop_code,
+                   origin_s.stop_lat, origin_s.stop_lon,
+                   IFNULL(origin_st.departure_time, origin_st.arrival_time) AS origin_time,
+                   IFNULL(origin_st.departure_seconds, origin_st.arrival_seconds) AS origin_seconds,
+                   origin_st.stop_sequence,
+                   destination_st.stop_id, destination_s.stop_name, destination_s.stop_code,
+                   destination_s.stop_lat, destination_s.stop_lon,
+                   IFNULL(destination_st.arrival_time, destination_st.departure_time) AS destination_time,
+                   IFNULL(destination_st.arrival_seconds, destination_st.departure_seconds) AS destination_seconds,
+                   destination_st.stop_sequence
+            FROM stop_times origin_st
+            JOIN stop_times destination_st
+              ON destination_st.trip_id = origin_st.trip_id
+             AND destination_st.stop_sequence > origin_st.stop_sequence
+            JOIN trips t ON t.trip_id = origin_st.trip_id
+            JOIN routes r ON r.route_id = t.route_id
+            JOIN stops origin_s ON origin_s.stop_id = origin_st.stop_id
+            JOIN stops destination_s ON destination_s.stop_id = destination_st.stop_id
+            WHERE origin_st.stop_id IN (\(originPlaceholders))
+              AND t.service_id IN (\(servicePlaceholders))
+              AND r.route_type IN (3, 701)
+              AND IFNULL(origin_st.departure_seconds, origin_st.arrival_seconds) BETWEEN ? AND ?
+            ORDER BY origin_seconds ASC, destination_seconds ASC
+            LIMIT ?
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var index: Int32 = 1
+        for stopId in originStopIds {
+            sqlite3_bind_text(stmt, index, (stopId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+        for serviceId in activeServiceIds {
+            sqlite3_bind_text(stmt, index, (serviceId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+        sqlite3_bind_int(stmt, index, Int32(afterSeconds)); index += 1
+        sqlite3_bind_int(stmt, index, Int32(afterSeconds + horizonSeconds)); index += 1
+        sqlite3_bind_int(stmt, index, Int32(limit))
+
+        var results: [DirectRoutePlanCandidate] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(
+                DirectRoutePlanCandidate(
+                    tripId: String(cString: sqlite3_column_text(stmt, 0)),
+                    routeId: String(cString: sqlite3_column_text(stmt, 1)),
+                    routeShortName: sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? "",
+                    routeLongName: sqlite3_column_text(stmt, 3).map { String(cString: $0) } ?? "",
+                    tripHeadsign: sqlite3_column_text(stmt, 4).map { String(cString: $0) },
+                    directionId: Int(sqlite3_column_int(stmt, 5)),
+                    routeType: Int(sqlite3_column_int(stmt, 6)),
+                    originStopId: String(cString: sqlite3_column_text(stmt, 7)),
+                    originStopName: String(cString: sqlite3_column_text(stmt, 8)),
+                    originStopCode: sqlite3_column_text(stmt, 9).map { String(cString: $0) },
+                    originLat: sqlite3_column_double(stmt, 10),
+                    originLon: sqlite3_column_double(stmt, 11),
+                    originTime: sqlite3_column_text(stmt, 12).map { String(cString: $0) },
+                    originSeconds: Int(sqlite3_column_int(stmt, 13)),
+                    originSequence: Int(sqlite3_column_int(stmt, 14)),
+                    destinationStopId: String(cString: sqlite3_column_text(stmt, 15)),
+                    destinationStopName: String(cString: sqlite3_column_text(stmt, 16)),
+                    destinationStopCode: sqlite3_column_text(stmt, 17).map { String(cString: $0) },
+                    destinationLat: sqlite3_column_double(stmt, 18),
+                    destinationLon: sqlite3_column_double(stmt, 19),
+                    destinationTime: sqlite3_column_text(stmt, 20).map { String(cString: $0) },
+                    destinationSeconds: Int(sqlite3_column_int(stmt, 21)),
+                    destinationSequence: Int(sqlite3_column_int(stmt, 22))
+                )
+            )
+        }
+
+        return results
+    }
+
+    func oneTransferRoutePlanCandidates(
+        originStopIds: [String],
+        destinationStopIds: [String],
+        afterSeconds: Int,
+        minimumTransferSeconds: Int = 5 * 60,
+        maximumTransferSeconds: Int = 45 * 60,
+        horizonSeconds: Int = 2 * 60 * 60,
+        limit: Int = 12
+    ) throws -> [OneTransferRoutePlanCandidate] {
+        guard let db else { throw GTFSDBError.notReady }
+        guard !originStopIds.isEmpty, !destinationStopIds.isEmpty else { return [] }
+
+        let activeServiceIds = try todayActiveServiceIds()
+        guard !activeServiceIds.isEmpty else { return [] }
+
+        let originPlaceholders = originStopIds.map { _ in "?" }.joined(separator: ",")
+        let destinationPlaceholders = destinationStopIds.map { _ in "?" }.joined(separator: ",")
+        let firstServicePlaceholders = activeServiceIds.map { _ in "?" }.joined(separator: ",")
+        let secondServicePlaceholders = activeServiceIds.map { _ in "?" }.joined(separator: ",")
+        let sql = """
+            SELECT first_origin.trip_id,
+                   first_t.route_id, first_r.route_short_name, first_r.route_long_name,
+                   first_t.trip_headsign, first_t.direction_id, first_r.route_type,
+                   first_origin.stop_id, origin_s.stop_name, origin_s.stop_code,
+                   origin_s.stop_lat, origin_s.stop_lon,
+                   IFNULL(first_origin.departure_time, first_origin.arrival_time) AS first_origin_time,
+                   IFNULL(first_origin.departure_seconds, first_origin.arrival_seconds) AS first_origin_seconds,
+                   first_origin.stop_sequence,
+                   first_transfer.stop_id, transfer_s.stop_name, transfer_s.stop_code,
+                   transfer_s.stop_lat, transfer_s.stop_lon,
+                   IFNULL(first_transfer.arrival_time, first_transfer.departure_time) AS first_transfer_time,
+                   IFNULL(first_transfer.arrival_seconds, first_transfer.departure_seconds) AS first_transfer_seconds,
+                   first_transfer.stop_sequence,
+                   second_transfer.trip_id,
+                   second_t.route_id, second_r.route_short_name, second_r.route_long_name,
+                   second_t.trip_headsign, second_t.direction_id, second_r.route_type,
+                   second_transfer.stop_id, transfer_s.stop_name, transfer_s.stop_code,
+                   transfer_s.stop_lat, transfer_s.stop_lon,
+                   IFNULL(second_transfer.departure_time, second_transfer.arrival_time) AS second_transfer_time,
+                   IFNULL(second_transfer.departure_seconds, second_transfer.arrival_seconds) AS second_transfer_seconds,
+                   second_transfer.stop_sequence,
+                   destination_st.stop_id, destination_s.stop_name, destination_s.stop_code,
+                   destination_s.stop_lat, destination_s.stop_lon,
+                   IFNULL(destination_st.arrival_time, destination_st.departure_time) AS destination_time,
+                   IFNULL(destination_st.arrival_seconds, destination_st.departure_seconds) AS destination_seconds,
+                   destination_st.stop_sequence
+            FROM stop_times first_origin
+            JOIN stop_times first_transfer
+              ON first_transfer.trip_id = first_origin.trip_id
+             AND first_transfer.stop_sequence > first_origin.stop_sequence
+            JOIN stop_times second_transfer
+              ON second_transfer.stop_id = first_transfer.stop_id
+             AND IFNULL(second_transfer.departure_seconds, second_transfer.arrival_seconds)
+                 BETWEEN IFNULL(first_transfer.arrival_seconds, first_transfer.departure_seconds) + ?
+                     AND IFNULL(first_transfer.arrival_seconds, first_transfer.departure_seconds) + ?
+            JOIN stop_times destination_st
+              ON destination_st.trip_id = second_transfer.trip_id
+             AND destination_st.stop_sequence > second_transfer.stop_sequence
+            JOIN trips first_t ON first_t.trip_id = first_origin.trip_id
+            JOIN trips second_t ON second_t.trip_id = second_transfer.trip_id
+            JOIN routes first_r ON first_r.route_id = first_t.route_id
+            JOIN routes second_r ON second_r.route_id = second_t.route_id
+            JOIN stops origin_s ON origin_s.stop_id = first_origin.stop_id
+            JOIN stops transfer_s ON transfer_s.stop_id = first_transfer.stop_id
+            JOIN stops destination_s ON destination_s.stop_id = destination_st.stop_id
+            WHERE first_origin.stop_id IN (\(originPlaceholders))
+              AND destination_st.stop_id IN (\(destinationPlaceholders))
+              AND first_t.service_id IN (\(firstServicePlaceholders))
+              AND second_t.service_id IN (\(secondServicePlaceholders))
+              AND first_r.route_type IN (3, 701)
+              AND second_r.route_type IN (3, 701)
+              AND first_origin.trip_id != second_transfer.trip_id
+              AND IFNULL(first_origin.departure_seconds, first_origin.arrival_seconds) BETWEEN ? AND ?
+            ORDER BY first_origin_seconds ASC, destination_seconds ASC
+            LIMIT ?
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var index: Int32 = 1
+        sqlite3_bind_int(stmt, index, Int32(minimumTransferSeconds)); index += 1
+        sqlite3_bind_int(stmt, index, Int32(maximumTransferSeconds)); index += 1
+        for stopId in originStopIds {
+            sqlite3_bind_text(stmt, index, (stopId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+        for stopId in destinationStopIds {
+            sqlite3_bind_text(stmt, index, (stopId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+        for serviceId in activeServiceIds {
+            sqlite3_bind_text(stmt, index, (serviceId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+        for serviceId in activeServiceIds {
+            sqlite3_bind_text(stmt, index, (serviceId as NSString).utf8String, -1, nil)
+            index += 1
+        }
+        sqlite3_bind_int(stmt, index, Int32(afterSeconds)); index += 1
+        sqlite3_bind_int(stmt, index, Int32(afterSeconds + horizonSeconds)); index += 1
+        sqlite3_bind_int(stmt, index, Int32(limit))
+
+        var results: [OneTransferRoutePlanCandidate] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let firstLeg = DirectRoutePlanCandidate(
+                tripId: String(cString: sqlite3_column_text(stmt, 0)),
+                routeId: String(cString: sqlite3_column_text(stmt, 1)),
+                routeShortName: sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? "",
+                routeLongName: sqlite3_column_text(stmt, 3).map { String(cString: $0) } ?? "",
+                tripHeadsign: sqlite3_column_text(stmt, 4).map { String(cString: $0) },
+                directionId: Int(sqlite3_column_int(stmt, 5)),
+                routeType: Int(sqlite3_column_int(stmt, 6)),
+                originStopId: String(cString: sqlite3_column_text(stmt, 7)),
+                originStopName: String(cString: sqlite3_column_text(stmt, 8)),
+                originStopCode: sqlite3_column_text(stmt, 9).map { String(cString: $0) },
+                originLat: sqlite3_column_double(stmt, 10),
+                originLon: sqlite3_column_double(stmt, 11),
+                originTime: sqlite3_column_text(stmt, 12).map { String(cString: $0) },
+                originSeconds: Int(sqlite3_column_int(stmt, 13)),
+                originSequence: Int(sqlite3_column_int(stmt, 14)),
+                destinationStopId: String(cString: sqlite3_column_text(stmt, 15)),
+                destinationStopName: String(cString: sqlite3_column_text(stmt, 16)),
+                destinationStopCode: sqlite3_column_text(stmt, 17).map { String(cString: $0) },
+                destinationLat: sqlite3_column_double(stmt, 18),
+                destinationLon: sqlite3_column_double(stmt, 19),
+                destinationTime: sqlite3_column_text(stmt, 20).map { String(cString: $0) },
+                destinationSeconds: Int(sqlite3_column_int(stmt, 21)),
+                destinationSequence: Int(sqlite3_column_int(stmt, 22))
+            )
+            let secondLeg = DirectRoutePlanCandidate(
+                tripId: String(cString: sqlite3_column_text(stmt, 23)),
+                routeId: String(cString: sqlite3_column_text(stmt, 24)),
+                routeShortName: sqlite3_column_text(stmt, 25).map { String(cString: $0) } ?? "",
+                routeLongName: sqlite3_column_text(stmt, 26).map { String(cString: $0) } ?? "",
+                tripHeadsign: sqlite3_column_text(stmt, 27).map { String(cString: $0) },
+                directionId: Int(sqlite3_column_int(stmt, 28)),
+                routeType: Int(sqlite3_column_int(stmt, 29)),
+                originStopId: String(cString: sqlite3_column_text(stmt, 30)),
+                originStopName: String(cString: sqlite3_column_text(stmt, 31)),
+                originStopCode: sqlite3_column_text(stmt, 32).map { String(cString: $0) },
+                originLat: sqlite3_column_double(stmt, 33),
+                originLon: sqlite3_column_double(stmt, 34),
+                originTime: sqlite3_column_text(stmt, 35).map { String(cString: $0) },
+                originSeconds: Int(sqlite3_column_int(stmt, 36)),
+                originSequence: Int(sqlite3_column_int(stmt, 37)),
+                destinationStopId: String(cString: sqlite3_column_text(stmt, 38)),
+                destinationStopName: String(cString: sqlite3_column_text(stmt, 39)),
+                destinationStopCode: sqlite3_column_text(stmt, 40).map { String(cString: $0) },
+                destinationLat: sqlite3_column_double(stmt, 41),
+                destinationLon: sqlite3_column_double(stmt, 42),
+                destinationTime: sqlite3_column_text(stmt, 43).map { String(cString: $0) },
+                destinationSeconds: Int(sqlite3_column_int(stmt, 44)),
+                destinationSequence: Int(sqlite3_column_int(stmt, 45))
+            )
+            results.append(OneTransferRoutePlanCandidate(firstLeg: firstLeg, secondLeg: secondLeg))
         }
 
         return results
@@ -407,6 +875,37 @@ actor VictorianBusGTFSDatabase {
         let boardingSeconds: Int
     }
 
+    struct DirectRoutePlanCandidate {
+        let tripId: String
+        let routeId: String
+        let routeShortName: String
+        let routeLongName: String
+        let tripHeadsign: String?
+        let directionId: Int
+        let routeType: Int
+        let originStopId: String
+        let originStopName: String
+        let originStopCode: String?
+        let originLat: Double
+        let originLon: Double
+        let originTime: String?
+        let originSeconds: Int
+        let originSequence: Int
+        let destinationStopId: String
+        let destinationStopName: String
+        let destinationStopCode: String?
+        let destinationLat: Double
+        let destinationLon: Double
+        let destinationTime: String?
+        let destinationSeconds: Int
+        let destinationSequence: Int
+    }
+
+    struct OneTransferRoutePlanCandidate {
+        let firstLeg: DirectRoutePlanCandidate
+        let secondLeg: DirectRoutePlanCandidate
+    }
+
     struct ScheduledDeparture {
         let tripId: String
         let stopId: String
@@ -431,6 +930,17 @@ actor VictorianBusGTFSDatabase {
         let departureTime: String?
         let arrivalSeconds: Int
         let departureSeconds: Int
+        let stopSequence: Int
+    }
+
+    struct RoutePlanTripPatternStop {
+        let stopId: String
+        let stopName: String
+        let stopCode: String?
+        let stopLat: Double
+        let stopLon: Double
+        let scheduledTime: String?
+        let scheduledSeconds: Int
         let stopSequence: Int
     }
 
