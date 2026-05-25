@@ -48,9 +48,10 @@ struct RoutePlanLeg: Identifiable {
     let departureSeconds: Int
     let arrivalSeconds: Int
     let stops: [RoutePlanTripStop]
+    let pathCoordinates: [CLLocationCoordinate2D]
 
     var polylineCoordinates: [CLLocationCoordinate2D] {
-        stops.map(\.coordinate)
+        pathCoordinates.count > 1 ? pathCoordinates : stops.map(\.coordinate)
     }
 
     var displayHeadsign: String {
@@ -86,7 +87,7 @@ struct RoutePlanOption: Identifiable {
     }
 
     var transferCount: Int {
-        max(0, legs.count - 1)
+        max(0, legs.filter { $0.routeShortName != "Walk" }.count - 1)
     }
 
     var polylineCoordinates: [CLLocationCoordinate2D] {
@@ -102,16 +103,22 @@ struct RoutePlanOption: Identifiable {
     }
 
     var transferSummary: String? {
-        guard legs.count > 1 else { return nil }
-        let waits = zip(legs, legs.dropFirst()).map { first, second in
-            max(0, (second.departureSeconds - first.arrivalSeconds) / 60)
+        let transitLegs = legs.filter { $0.routeShortName != "Walk" }
+        guard transitLegs.count > 1 else { return nil }
+        
+        var totalWait = 0
+        for i in 0..<(transitLegs.count - 1) {
+            let arrival = transitLegs[i].arrivalSeconds
+            let nextDeparture = transitLegs[i+1].departureSeconds
+            totalWait += max(0, (nextDeparture - arrival) / 60)
         }
-        let totalWait = waits.reduce(0, +)
-        let firstTransferStop = legs[0].destinationStop.stopName
-        if transferCount == 1 {
-            return "Transfer at \(firstTransferStop) · \(totalWait) min wait"
+        
+        let firstTransferStop = transitLegs[0].destinationStop.stopName
+        let tCount = transitLegs.count - 1
+        if tCount == 1 {
+            return "Transfer at \(firstTransferStop) · \(totalWait) min total layover"
         }
-        return "\(transferCount) transfers · first at \(firstTransferStop) · \(totalWait) min total wait"
+        return "\(tCount) transfers · first at \(firstTransferStop) · \(totalWait) min total layover"
     }
 }
 

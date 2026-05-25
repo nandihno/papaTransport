@@ -20,6 +20,8 @@ struct RoutePlannerView: View {
     @State private var isPlanning = false
     @State private var errorMessage: String?
     @State private var planTask: Task<Void, Never>?
+    @State private var sheetOffset: CGFloat = 0
+    @State private var isCollapsed = false
 
     private var transportRegion: TransportRegion {
         TransportRegion(rawValue: transportRegionRaw) ?? .victorian
@@ -62,6 +64,7 @@ struct RoutePlannerView: View {
                 .allowsHitTesting(false)
 
                 headerOverlay(topInset: proxy.safeAreaInsets.top)
+                routeLegendOverlay(topInset: proxy.safeAreaInsets.top)
 
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
@@ -78,13 +81,22 @@ struct RoutePlannerView: View {
                 UserAnnotation()
 
                 if let selectedOption {
+                    let firstTransitLegId = selectedOption.legs.first { $0.routeShortName != "Walk" }?.id
                     ForEach(selectedOption.legs) { leg in
                         if leg.polylineCoordinates.count > 1 {
-                            MapPolyline(coordinates: leg.polylineCoordinates)
-                                .stroke(
-                                    leg.id == selectedOption.legs.first?.id ? palette.accent : AppTheme.info,
-                                    style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round)
-                                )
+                            if leg.routeShortName == "Walk" {
+                                MapPolyline(coordinates: leg.polylineCoordinates)
+                                    .stroke(
+                                        Color.gray.opacity(0.85),
+                                        style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [6, 4])
+                                    )
+                            } else {
+                                MapPolyline(coordinates: leg.polylineCoordinates)
+                                    .stroke(
+                                        leg.id == firstTransitLegId ? palette.accent : AppTheme.info,
+                                        style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round)
+                                    )
+                            }
                         }
                     }
                 }
@@ -110,7 +122,7 @@ struct RoutePlannerView: View {
                 }
 
                 if let selectedOption {
-                    ForEach(selectedOption.legs.dropFirst()) { leg in
+                    ForEach(selectedOption.legs.dropFirst().filter { $0.routeShortName != "Walk" }) { leg in
                         Marker("Transfer", systemImage: "arrow.triangle.swap", coordinate: leg.originStop.coordinate)
                             .tint(AppTheme.info)
                     }
@@ -168,6 +180,53 @@ struct RoutePlannerView: View {
         .padding(.horizontal, 18)
     }
 
+    @ViewBuilder
+    private func routeLegendOverlay(topInset: CGFloat) -> some View {
+        if let selectedOption, selectedOption.legs.contains(where: { $0.polylineCoordinates.count > 1 }) {
+            HStack {
+                Spacer()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    legendLine(label: "Main bus", color: palette.accent, isDashed: false)
+
+                    if selectedOption.transferCount > 0 {
+                        legendLine(label: "Transfer bus", color: AppTheme.info, isDashed: false)
+                    }
+
+                    if selectedOption.legs.contains(where: { $0.routeShortName == "Walk" }) {
+                        legendLine(label: "Walk", color: Color.gray.opacity(0.85), isDashed: true)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                }
+            }
+            .padding(.top, max(topInset, 12) + 124)
+            .padding(.horizontal, 18)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func legendLine(label: String, color: Color, isDashed: Bool) -> some View {
+        HStack(spacing: 8) {
+            Capsule()
+                .stroke(
+                    color,
+                    style: StrokeStyle(lineWidth: 4, lineCap: .round, dash: isDashed ? [6, 4] : [])
+                )
+                .frame(width: 28, height: 8)
+
+            Text(label)
+                .font(.transit(11, weight: .bold))
+                .foregroundStyle(palette.textPrimary)
+                .lineLimit(1)
+        }
+    }
+
     private var instructionText: String {
         switch (originCoordinate, destinationCoordinate) {
         case (nil, _):
@@ -179,24 +238,165 @@ struct RoutePlannerView: View {
         }
     }
 
+    private var sheetDragGesture: some Gesture {
+        DragGesture(coordinateSpace: .global)
+            .onChanged { value in
+                let dragY = value.translation.height
+                let baseOffset = isCollapsed ? 290.0 : 0.0
+                let newOffset = baseOffset + dragY
+                
+                if newOffset < 0 {
+                    sheetOffset = newOffset * 0.2
+                } else {
+                    sheetOffset = newOffset
+                }
+            }
+            .onEnded { value in
+                let dragY = value.translation.height
+                let velocityY = value.predictedEndLocation.y - value.location.y
+                
+                if abs(dragY) < 5 {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                        isCollapsed.toggle()
+                        sheetOffset = isCollapsed ? 290 : 0
+                    }
+                    return
+                }
+                
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                    if isCollapsed {
+                        if dragY < -60 || velocityY < -150 {
+                            isCollapsed = false
+                            sheetOffset = 0
+                        } else {
+                            sheetOffset = 290
+                        }
+                    } else {
+                        if dragY > 60 || velocityY > 150 {
+                            isCollapsed = true
+                            sheetOffset = 290
+                        } else {
+                            sheetOffset = 0
+                        }
+                    }
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var collapsedHeaderContent: some View {
+        if isPlanning {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.subheadline)
+                    .foregroundStyle(palette.accent)
+                Text("Finding bus trips...")
+                    .font(.transit(13, weight: .bold))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+        } else if let errorMessage {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.danger)
+                Text("Trip planning unavailable")
+                    .font(.transit(13, weight: .bold))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+        } else if originCoordinate == nil || destinationCoordinate == nil {
+            HStack(spacing: 8) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.subheadline)
+                    .foregroundStyle(palette.accent)
+                Text("Tap map to plan route")
+                    .font(.transit(13, weight: .bold))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+        } else if let result, result.options.isEmpty {
+            HStack(spacing: 8) {
+                Image(systemName: "bus.doubledecker")
+                    .font(.subheadline)
+                    .foregroundStyle(palette.accent)
+                Text("No bus trip found")
+                    .font(.transit(13, weight: .bold))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+        } else if let option = selectedOption {
+            HStack(spacing: 8) {
+                Text(option.routeSummary)
+                    .font(.transit(13, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(palette.accent, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                
+                Spacer()
+                
+                Text("\(option.durationMinutes) min")
+                    .font(.transit(13, weight: .bold))
+                    .foregroundStyle(palette.accent)
+                
+                Text("•")
+                    .font(.transit(12, weight: .bold))
+                    .foregroundStyle(palette.textTertiary)
+                
+                Text("\(option.departureTime) - \(option.arrivalTime)")
+                    .font(.transit(12, weight: .bold))
+                    .foregroundStyle(palette.textPrimary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+        }
+    }
+
     private func resultSheet(safeBottom: CGFloat) -> some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 14) {
+        VStack(spacing: 0) {
+            VStack(spacing: 0) {
                 Capsule()
                     .fill(palette.textTertiary.opacity(0.5))
                     .frame(width: 40, height: 4)
-                    .frame(maxWidth: .infinity)
                     .padding(.top, 10)
-
-                statusContent
-
-                if let result {
-                    snappedStopsCard(result)
-                    optionsContent(result)
+                    .padding(.bottom, isCollapsed ? 8 : 12)
+                
+                if isCollapsed {
+                    collapsedHeaderContent
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, safeBottom + 10)
+            .frame(maxWidth: .infinity)
+            .background(Color.clear)
+            .contentShape(Rectangle())
+            .gesture(sheetDragGesture)
+            
+            if !isCollapsed {
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        statusContent
+
+                        if let result {
+                            snappedStopsCard(result)
+                            optionsContent(result)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, safeBottom + 10)
+                }
+                .transition(.opacity)
+            } else {
+                Spacer(minLength: 0)
+            }
         }
         .frame(maxWidth: .infinity)
         .frame(height: 360, alignment: .top)
@@ -216,6 +416,7 @@ struct RoutePlannerView: View {
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
         .shadow(color: Color.black.opacity(0.14), radius: 24, y: -6)
+        .offset(y: sheetOffset)
     }
 
     @ViewBuilder
@@ -361,24 +562,36 @@ struct RoutePlannerView: View {
     }
 
     private func legRow(_ leg: RoutePlanLeg) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(leg.routeShortName)
+        let isWalk = leg.routeShortName == "Walk"
+        return HStack(alignment: .top, spacing: 10) {
+            Text(isWalk ? "Walk" : leg.routeShortName)
                 .font(.transit(12, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(minWidth: 44)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(palette.accent.opacity(0.86), in: Capsule())
+                .background(isWalk ? Color.gray.opacity(0.68) : palette.accent.opacity(0.86), in: Capsule())
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("\(leg.departureTime) \(leg.originStop.stopName)")
-                    .font(.transit(12, weight: .bold))
-                    .foregroundStyle(palette.textPrimary)
-                    .lineLimit(1)
-                Text("\(leg.arrivalTime) \(leg.destinationStop.stopName)")
-                    .font(.transit(11, weight: .medium))
-                    .foregroundStyle(palette.textSecondary)
-                    .lineLimit(1)
+                if isWalk {
+                    Text("Walk \(Int(leg.destinationStop.distanceMeters)) m (\(leg.durationMinutes) min)")
+                        .font(.transit(12, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+                        .lineLimit(1)
+                    Text("To \(leg.destinationStop.stopName)")
+                        .font(.transit(11, weight: .medium))
+                        .foregroundStyle(palette.textSecondary)
+                        .lineLimit(1)
+                } else {
+                    Text("\(leg.departureTime) \(leg.originStop.stopName)")
+                        .font(.transit(12, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+                        .lineLimit(1)
+                    Text("\(leg.arrivalTime) \(leg.destinationStop.stopName)")
+                        .font(.transit(11, weight: .medium))
+                        .foregroundStyle(palette.textSecondary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer()
@@ -464,6 +677,10 @@ struct RoutePlannerView: View {
         result = nil
         selectedOptionId = nil
         errorMessage = nil
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+            isCollapsed = false
+            sheetOffset = 0
+        }
         planIfReady()
     }
 
@@ -482,9 +699,17 @@ struct RoutePlannerView: View {
                 result = nil
                 selectedOptionId = nil
                 errorMessage = nil
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                    isCollapsed = false
+                    sheetOffset = 0
+                }
                 planIfReady()
             } catch {
                 errorMessage = error.localizedDescription
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                    isCollapsed = false
+                    sheetOffset = 0
+                }
             }
         }
     }
@@ -498,11 +723,19 @@ struct RoutePlannerView: View {
         errorMessage = nil
         selectedPointMode = .origin
         isPlanning = false
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+            isCollapsed = false
+            sheetOffset = 0
+        }
     }
 
     private func planIfReady() {
         guard let originCoordinate, let destinationCoordinate else { return }
         planTask?.cancel()
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+            isCollapsed = false
+            sheetOffset = 0
+        }
         planTask = Task {
             isPlanning = true
             errorMessage = nil

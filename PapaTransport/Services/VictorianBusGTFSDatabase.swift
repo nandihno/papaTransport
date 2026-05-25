@@ -472,6 +472,81 @@ actor VictorianBusGTFSDatabase {
         return results
     }
 
+    func routePlanShapeCoordinates(
+        tripId: String,
+        fromSequence: Int,
+        toSequence: Int
+    ) throws -> [CLLocationCoordinate2D] {
+        guard let db else { throw GTFSDBError.notReady }
+
+        let shapeBoundsSQL = """
+            SELECT t.shape_id, origin_st.shape_dist_traveled, destination_st.shape_dist_traveled
+            FROM trips t
+            JOIN stop_times origin_st
+              ON origin_st.trip_id = t.trip_id
+             AND origin_st.stop_sequence = ?
+            JOIN stop_times destination_st
+              ON destination_st.trip_id = t.trip_id
+             AND destination_st.stop_sequence = ?
+            WHERE t.trip_id = ?
+        """
+
+        var boundsStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, shapeBoundsSQL, -1, &boundsStmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(boundsStmt) }
+
+        sqlite3_bind_int(boundsStmt, 1, Int32(fromSequence))
+        sqlite3_bind_int(boundsStmt, 2, Int32(toSequence))
+        sqlite3_bind_text(boundsStmt, 3, (tripId as NSString).utf8String, -1, nil)
+
+        guard sqlite3_step(boundsStmt) == SQLITE_ROW,
+              let shapeIdText = sqlite3_column_text(boundsStmt, 0),
+              sqlite3_column_type(boundsStmt, 1) != SQLITE_NULL,
+              sqlite3_column_type(boundsStmt, 2) != SQLITE_NULL else {
+            return []
+        }
+
+        let shapeId = String(cString: shapeIdText)
+        let fromDistance = sqlite3_column_double(boundsStmt, 1)
+        let toDistance = sqlite3_column_double(boundsStmt, 2)
+        let minDistance = min(fromDistance, toDistance)
+        let maxDistance = max(fromDistance, toDistance)
+
+        guard !shapeId.isEmpty, maxDistance > minDistance else { return [] }
+
+        let shapeSQL = """
+            SELECT shape_pt_lat, shape_pt_lon
+            FROM shapes
+            WHERE shape_id = ?
+              AND shape_dist_traveled BETWEEN ? AND ?
+            ORDER BY shape_pt_sequence ASC
+        """
+
+        var shapeStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, shapeSQL, -1, &shapeStmt, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(shapeStmt) }
+
+        sqlite3_bind_text(shapeStmt, 1, (shapeId as NSString).utf8String, -1, nil)
+        sqlite3_bind_double(shapeStmt, 2, minDistance)
+        sqlite3_bind_double(shapeStmt, 3, maxDistance)
+
+        var coordinates: [CLLocationCoordinate2D] = []
+        while sqlite3_step(shapeStmt) == SQLITE_ROW {
+            coordinates.append(
+                CLLocationCoordinate2D(
+                    latitude: sqlite3_column_double(shapeStmt, 0),
+                    longitude: sqlite3_column_double(shapeStmt, 1)
+                )
+            )
+        }
+
+        return coordinates
+    }
+
     func reachableRoutePlanLegCandidates(
         originStopIds: [String],
         afterSeconds: Int,
@@ -1004,8 +1079,9 @@ actor VictorianBusGTFSDatabase {
     private func validateInstalledDatabase() throws -> Bool {
         guard FileManager.default.fileExists(atPath: dbPath) else { return false }
         try openDB()
-        let count = queryCount("SELECT COUNT(*) FROM stops")
-        if count > 0 {
+        let stopCount = queryCount("SELECT COUNT(*) FROM stops")
+        let shapeCount = queryCount("SELECT COUNT(*) FROM shapes")
+        if stopCount > 0 && shapeCount > 0 {
             isImported = true
             return true
         }
