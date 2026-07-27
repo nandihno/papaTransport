@@ -537,7 +537,7 @@ struct TrainMapExplorerView: View {
                 referenceLongitude: reference.longitude
             )
         default:
-            return try await VictorianTrainMapService.shared.fetchBusInfo(
+            return try await PTVBoardService.victorianTrain.fetchBusInfo(
                 minLat: bounds.minLat,
                 maxLat: bounds.maxLat,
                 minLon: bounds.minLon,
@@ -556,7 +556,7 @@ struct TrainMapExplorerView: View {
                 longitude: reference.longitude
             )
         default:
-            return try await VictorianTrainMapService.shared.fetchFavouriteBusInfo(
+            return try await PTVBoardService.victorianTrain.fetchFavouriteBusInfo(
                 referenceLatitude: reference.latitude,
                 longitude: reference.longitude
             )
@@ -1651,7 +1651,7 @@ private func trainMapService(for provider: BusProvider) -> any BusDataProviding 
     case .queenslandTrainTransLink:
         return QLDTrainMapService.shared
     default:
-        return VictorianTrainMapService.shared
+        return PTVBoardService.victorianTrain
     }
 }
 

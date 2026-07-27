@@ -61,7 +61,7 @@ final class CommutingService {
         case .queensland:
             BusService.shared
         case .victorian:
-            VictorianBusService.shared
+            PTVBoardService.victorianBus
         }
 
         do {

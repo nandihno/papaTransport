@@ -3,3 +3,9 @@ PapaTransport/db/
 
 # Local API keys — never commit this file.
 PapaTransport/APIKeys.swift
+
+# PTV API response captures (scripts/dump_ptv_shapes.sh output)
+ptv-shapes/
+
+# Archived GTFS databases (moved out of the app bundle)
+_archive/

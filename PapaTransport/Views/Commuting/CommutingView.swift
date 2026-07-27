@@ -40,7 +40,6 @@ struct CommutingView: View {
     @State private var showSettings = false
     @State private var selectedTab = 0
 
-    private var drivingStore: DrivingDestinationStore { DrivingDestinationStore.shared }
 
     private var transportRegion: TransportRegion {
         TransportRegion(rawValue: transportRegionRaw) ?? .victorian
@@ -83,7 +82,6 @@ struct CommutingView: View {
     }
 
     private var usesImmersiveMapLayout: Bool {
-        if selectedTab == 2 || selectedTab == 3 { return false }
         if selectedTab == 0 {
             return shouldShowBusCard
         }
@@ -96,10 +94,6 @@ struct CommutingView: View {
             return "Bus"
         case 1:
             return "Trains"
-        case 2:
-            return "Locate"
-        case 3:
-            return "Driving"
         default:
             return "Plan"
         }
@@ -172,20 +166,8 @@ struct CommutingView: View {
                         Label("Trains", systemImage: "tram.fill")
                     }
 
-                locateTab
-                    .tag(2)
-                    .tabItem {
-                        Label("Locate", systemImage: "location.north.line.fill")
-                    }
-
-                drivingTab
-                    .tag(3)
-                    .tabItem {
-                        Label("Driving", systemImage: "car.fill")
-                    }
-
                 routePlannerTab
-                    .tag(4)
+                    .tag(2)
                     .tabItem {
                         Label("Plan", systemImage: "map.fill")
                     }
@@ -277,19 +259,6 @@ struct CommutingView: View {
                 )
             }
         }
-    }
-
-    // MARK: - Locate Tab
-
-    private var locateTab: some View {
-        LocateContainerView(transportRegion: transportRegion)
-    }
-
-    // MARK: - Driving Tab
-
-    private var drivingTab: some View {
-        DrivingTimesTabView(autoRefreshEnabled: selectedTab == 3)
-            .environment(drivingStore)
     }
 
     // MARK: - Route Planner Tab

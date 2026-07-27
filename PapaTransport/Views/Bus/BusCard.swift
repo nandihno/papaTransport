@@ -769,9 +769,9 @@ private struct BusTripDetailSheet: View {
         case .queenslandTrainTransLink:
             return QLDTrainMapService.shared
         case .victorianPTV:
-            return VictorianBusService.shared
+            return PTVBoardService.victorianBus
         case .victorianTrainPTV:
-            return VictorianTrainMapService.shared
+            return PTVBoardService.victorianTrain
         }
     }
 }

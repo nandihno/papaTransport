@@ -9,9 +9,8 @@ struct CommutingSettingsView: View {
     @AppStorage("transportMode") private var transportRegionRaw = TransportRegion.victorian.rawValue
     @AppStorage("victorianShowTrainCard") private var victorianShowTrainCard = true
     @AppStorage("victorianShowBusCard") private var victorianShowBusCard = false
-    @AppStorage(VictorianBusService.realtimeAPIKeyDefaultsKey) private var victorianGTFSRealtimeApiKey = ""
-    @AppStorage("drivingProvider") private var drivingProviderRaw = DrivingProvider.apple.rawValue
-    @AppStorage("googleMapsApiKey") private var googleMapsApiKey = ""
+    @State private var ptvCheckInProgress = false
+    @State private var ptvCheckMessage = ""
     @AppStorage(TrainStatusNotificationService.enabledKey) private var trainStatusNotificationsEnabled = false
     @AppStorage(TrainStatusNotificationService.selectedWeekdaysKey) private var trainStatusNotificationWeekdayMask = TrainStatusNotificationService.defaultWeekdayMask
     @AppStorage(TrainStatusNotificationService.timesKey) private var trainStatusNotificationTimesRaw = TrainStatusNotificationService.encodeTimes([TrainStatusNotificationService.defaultTimeSeconds])
@@ -32,10 +31,6 @@ struct CommutingSettingsView: View {
     @State private var busSetupInProgress = false
     @State private var showResetConfirmation = false
 
-    @State private var trainDataReady = false
-    @State private var trainSetupMessage = ""
-    @State private var trainSetupInProgress = false
-    @State private var showTrainResetConfirmation = false
     @State private var notificationAuthorizationStatus: UNAuthorizationStatus = .notDetermined
     @State private var notificationMessage = ""
     @State private var sendingStatusNotification = false
@@ -57,7 +52,6 @@ struct CommutingSettingsView: View {
         NavigationStack {
             Form {
                 dashboardSection
-                drivingProviderSection
 
                 if transportRegion == .victorian && victorianShowTrainCard {
                     victorianTrainSection
@@ -66,6 +60,7 @@ struct CommutingSettingsView: View {
 
                 if transportRegion == .victorian {
                     victorianTrainDataSection
+                    ptvTimetableAPISection
                 }
 
                 if transportRegion == .queensland && busDataReady {
@@ -83,12 +78,10 @@ struct CommutingSettingsView: View {
             }
             .task {
                 await refreshBusState()
-                await refreshTrainState()
                 await refreshNotificationAuthorizationStatus()
             }
             .onChange(of: transportRegionRaw) { _, _ in
                 Task { await refreshBusState() }
-                Task { await refreshTrainState() }
                 if transportRegion != .victorian {
                     Task { await disableTrainStatusNotificationsIfUnavailable() }
                 }
@@ -141,34 +134,6 @@ struct CommutingSettingsView: View {
                 Text("Choose which Victorian commuting cards appear on the main screen.")
             } else {
                 Text("Queensland mode shows SEQ bus departures near your location.")
-            }
-        }
-    }
-
-    private var drivingProviderSection: some View {
-        Section {
-            Toggle(
-                "Use Google Maps",
-                isOn: Binding(
-                    get: { drivingProviderRaw == DrivingProvider.google.rawValue },
-                    set: { drivingProviderRaw = ($0 ? DrivingProvider.google : DrivingProvider.apple).rawValue }
-                )
-            )
-            if drivingProviderRaw == DrivingProvider.google.rawValue {
-                LabeledContent("API Key") {
-                    TextField("AIza...", text: $googleMapsApiKey)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .multilineTextAlignment(.trailing)
-                }
-            }
-        } header: {
-            Text("Driving Provider")
-        } footer: {
-            if drivingProviderRaw == DrivingProvider.google.rawValue {
-                Text("Enter your Google Routes API key. The key is stored only on this device and is used to fetch live driving times on the Driving tab.")
-            } else {
-                Text("Apple Maps is used by default for live driving times. Switch to Google Maps to use the Google Routes API instead.")
             }
         }
     }
@@ -373,50 +338,23 @@ struct CommutingSettingsView: View {
 
     private var victorianTrainDataSection: some View {
         Section {
-            if trainDataReady {
-                NavigationLink {
-                    FavouriteBusStopsView(provider: .victorianTrainPTV)
-                } label: {
-                    HStack {
-                        Text("Favourite Stations")
-                        Spacer()
-                        Text("\(FavouriteBusStopStore.shared.count(for: .victorianTrainPTV))")
-                            .foregroundStyle(.secondary)
-                    }
+            NavigationLink {
+                FavouriteBusStopsView(provider: .victorianTrainPTV)
+            } label: {
+                HStack {
+                    Text("Favourite Stations")
+                    Spacer()
+                    Text("\(FavouriteBusStopStore.shared.count(for: .victorianTrainPTV))")
+                        .foregroundStyle(.secondary)
                 }
-                Label("Train stations in the visible map area are shown on the Trains tab.", systemImage: "location.fill")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                Button(role: .destructive) {
-                    showTrainResetConfirmation = true
-                } label: {
-                    Label("Reinstall Bundled Train Data", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .confirmationDialog(
-                    "Reinstall bundled train data?",
-                    isPresented: $showTrainResetConfirmation,
-                    titleVisibility: .visible
-                ) {
-                    Button("Reinstall", role: .destructive) {
-                        Task { await reinstallTrainData() }
-                    }
-                } message: {
-                    Text("This clears the installed cached train database and reinstalls the bundled copy from the app package.")
-                }
-            } else {
-                trainSetupControls
             }
-
-            if !trainSetupMessage.isEmpty {
-                Text(trainSetupMessage)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            Label("Train stations in the visible map area are shown on the Trains tab.", systemImage: "location.fill")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         } header: {
             Text("Victorian Train")
         } footer: {
-            Text("The bundled Victorian train GTFS database powers nearby station departures. Live predictions use the same Transport Victoria realtime key configured below.")
+            Text("Victorian train departures and live predictions come from the PTV Timetable API.")
         }
     }
 
@@ -493,37 +431,6 @@ struct CommutingSettingsView: View {
         await refreshNotificationAuthorizationStatus()
     }
 
-    @ViewBuilder
-    private var trainSetupControls: some View {
-        if trainSetupInProgress {
-            HStack(spacing: 12) {
-                ProgressView()
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(progress.stage.isEmpty ? "Installing train data…" : progress.stage)
-                        .font(.subheadline)
-                    if !progress.detail.isEmpty {
-                        Text(progress.detail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Install the bundled Victorian train timetable database to enable the station map and departures.", systemImage: "shippingbox.fill")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                Button {
-                    Task { await installTrainData() }
-                } label: {
-                    Label("Install Bundled Train Data", systemImage: "shippingbox.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-    }
 
     @ViewBuilder
     private var transportBusSections: some View {
@@ -571,65 +478,85 @@ struct CommutingSettingsView: View {
 
     private var victorianBusSection: some View {
         Section {
-            if APIKeys.victorianBusRealtime != nil {
-                LabeledContent("Realtime API Key") {
+            NavigationLink {
+                FavouriteBusStopsView(provider: .victorianPTV)
+            } label: {
+                HStack {
+                    Text("Favourite Stops")
+                    Spacer()
+                    Text("\(FavouriteBusStopStore.shared.count(for: .victorianPTV))")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Label("Nearby Melbourne bus stops are shown automatically.", systemImage: "location.fill")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("Victorian Bus")
+        } footer: {
+            Text("Victorian bus departures and live predictions come from the PTV Timetable API.")
+        }
+    }
+
+    /// Only Queensland still ships a bundled database to manage.
+    private var shouldShowBusManagement: Bool {
+        transportRegion == .queensland && busDataReady
+    }
+
+    private var ptvTimetableAPISection: some View {
+        Section {
+            if PTVCredentials.isConfigured {
+                LabeledContent("Credentials") {
                     Label("Active", systemImage: "checkmark.seal.fill")
                         .foregroundStyle(.green)
                         .font(.subheadline)
                 }
-            } else {
-                LabeledContent("Realtime API Key") {
-                    TextField("Ocp-Apim key", text: $victorianGTFSRealtimeApiKey)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .multilineTextAlignment(.trailing)
-                }
 
-                if victorianGTFSRealtimeApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Label("Scheduled departures still work without this key. Add it to unlock live late and early predictions.", systemImage: "clock.badge.exclamationmark")
+                if !ptvCheckMessage.isEmpty {
+                    Text(ptvCheckMessage)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-            }
 
-            if busDataReady {
-                NavigationLink {
-                    FavouriteBusStopsView(provider: .victorianPTV)
+                Button {
+                    Task { await checkPTVConnection() }
                 } label: {
-                    HStack {
-                        Text("Favourite Stops")
-                        Spacer()
-                        Text("\(FavouriteBusStopStore.shared.count(for: .victorianPTV))")
-                            .foregroundStyle(.secondary)
+                    if ptvCheckInProgress {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("Checking…")
+                        }
+                    } else {
+                        Label("Test Connection", systemImage: "antenna.radiowaves.left.and.right")
                     }
                 }
-                Label("Nearby Melbourne bus stops are available after the bundled database is installed.", systemImage: "location.fill")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                .disabled(ptvCheckInProgress)
             } else {
-                setupControls(
-                    title: "Install Bundled Bus Data",
-                    subtitle: "Install the bundled Victorian timetable database before browsing and saving favourite stops."
+                Label(
+                    "No PTV credentials are embedded in this build.",
+                    systemImage: "exclamationmark.triangle"
                 )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             }
         } header: {
-            Text("Victorian Bus")
+            Text("PTV Timetable API")
         } footer: {
-            if APIKeys.victorianBusRealtime != nil {
-                Text("The realtime key is embedded in this build. Live late and early predictions are active.")
-            } else {
-                Text("The bundled Victorian GTFS database powers nearby departures and favourite stops. Live predictions come from the Transport Victoria GTFS-RT bus feed when a realtime key is configured.")
-            }
+            Text("Victorian train and bus departures are served by the official PTV Timetable API and require a network connection. Source: Licensed from Public Transport Victoria under a Creative Commons Attribution 4.0 International Licence.")
         }
     }
 
-    private var shouldShowBusManagement: Bool {
-        switch transportRegion {
-        case .queensland:
-            busDataReady
-        case .victorian:
-            victorianShowBusCard && busDataReady
+    @MainActor
+    private func checkPTVConnection() async {
+        ptvCheckInProgress = true
+        ptvCheckMessage = ""
+        do {
+            let types = try await PTVAPIClient.shared.verifyConnection()
+            ptvCheckMessage = "Connected — \(types.count) route types available."
+        } catch {
+            ptvCheckMessage = error.localizedDescription
         }
+        ptvCheckInProgress = false
     }
 
     private var busManagementSection: some View {
@@ -708,12 +635,7 @@ struct CommutingSettingsView: View {
             return
         }
 
-        switch transportRegion {
-        case .queensland:
-            busDataReady = await GTFSDatabase.shared.isDatabaseReady()
-        case .victorian:
-            busDataReady = await VictorianBusGTFSDatabase.shared.isDatabaseReady()
-        }
+        busDataReady = await GTFSDatabase.shared.isDatabaseReady()
     }
 
     @MainActor
@@ -721,12 +643,7 @@ struct CommutingSettingsView: View {
         busSetupMessage = ""
         busSetupInProgress = true
         do {
-            switch transportRegion {
-            case .queensland:
-                try await GTFSDatabase.shared.ensureReady()
-            case .victorian:
-                try await VictorianBusGTFSDatabase.shared.ensureReady()
-            }
+            try await GTFSDatabase.shared.ensureReady()
             busDataReady = true
         } catch {
             busSetupMessage = "Install failed: \(error.localizedDescription)"
@@ -739,12 +656,7 @@ struct CommutingSettingsView: View {
         busSetupMessage = ""
         busSetupInProgress = true
         do {
-            switch transportRegion {
-            case .queensland:
-                try await GTFSDatabase.shared.refreshDatabase()
-            case .victorian:
-                try await VictorianBusGTFSDatabase.shared.refreshDatabase()
-            }
+            try await GTFSDatabase.shared.refreshDatabase()
             busDataReady = true
             busSetupMessage = "Bundled bus data was reinstalled from the app package."
         } catch {
@@ -753,43 +665,4 @@ struct CommutingSettingsView: View {
         busSetupInProgress = false
     }
 
-    // MARK: - Train Data
-
-    @MainActor
-    private func refreshTrainState() async {
-        guard transportRegion == .victorian else {
-            trainDataReady = false
-            trainSetupInProgress = false
-            trainSetupMessage = ""
-            return
-        }
-        trainDataReady = await VictorianTrainGTFSDatabase.shared.isDatabaseReady()
-    }
-
-    @MainActor
-    private func installTrainData() async {
-        trainSetupMessage = ""
-        trainSetupInProgress = true
-        do {
-            try await VictorianTrainGTFSDatabase.shared.ensureReady()
-            trainDataReady = true
-        } catch {
-            trainSetupMessage = "Install failed: \(error.localizedDescription)"
-        }
-        trainSetupInProgress = false
-    }
-
-    @MainActor
-    private func reinstallTrainData() async {
-        trainSetupMessage = ""
-        trainSetupInProgress = true
-        do {
-            try await VictorianTrainGTFSDatabase.shared.refreshDatabase()
-            trainDataReady = true
-            trainSetupMessage = "Bundled train data was reinstalled from the app package."
-        } catch {
-            trainSetupMessage = "Reinstall failed: \(error.localizedDescription)"
-        }
-        trainSetupInProgress = false
-    }
 }

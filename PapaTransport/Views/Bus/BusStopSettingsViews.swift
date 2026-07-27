@@ -170,52 +170,70 @@ struct BusStopMapView: View {
     private func loadStopsForRegion(_ region: MKCoordinateRegion) {
         loadTask?.cancel()
         loadTask = Task {
-            let minLat = region.center.latitude - region.span.latitudeDelta / 2
-            let maxLat = region.center.latitude + region.span.latitudeDelta / 2
-            let minLon = region.center.longitude - region.span.longitudeDelta / 2
-            let maxLon = region.center.longitude + region.span.longitudeDelta / 2
-
             do {
-                let stops: [GTFSStop]
-                switch provider {
-                case .queenslandTransLink:
-                    stops = try await GTFSDatabase.shared.stopsInRegion(
-                        minLat: minLat, maxLat: maxLat,
-                        minLon: minLon, maxLon: maxLon,
-                        limit: 150
-                    )
-                case .victorianPTV:
-                    stops = try await VictorianBusGTFSDatabase.shared.stopsInRegion(
-                        minLat: minLat, maxLat: maxLat,
-                        minLon: minLon, maxLon: maxLon,
-                        limit: 150
-                    )
-                case .queenslandTrainTransLink:
-                    stops = try await GTFSDatabase.shared.trainStationsInRegion(
-                        minLat: minLat, maxLat: maxLat,
-                        minLon: minLon, maxLon: maxLon,
-                        referenceLatitude: region.center.latitude,
-                        referenceLongitude: region.center.longitude
-                    ).map(\.stop)
-                case .victorianTrainPTV:
-                    stops = try await VictorianTrainGTFSDatabase.shared.stopsInRegion(
-                        minLat: minLat, maxLat: maxLat,
-                        minLon: minLon, maxLon: maxLon,
-                        limit: 200
-                    )
-                }
+                let stops = try await stopAnnotations(in: region)
                 guard !Task.isCancelled else { return }
-                visibleStops = stops.map { stop in
-                    BusStopAnnotation(
-                        stopId: stop.stopId,
-                        stopName: stop.stopName,
-                        stopCode: stop.stopCode,
-                        coordinate: CLLocationCoordinate2D(latitude: stop.stopLat, longitude: stop.stopLon)
-                    )
-                }
+                visibleStops = stops
             } catch {
-                // DB not ready — ignore
+                // Data source unavailable — keep whatever pins are already shown.
             }
+        }
+    }
+
+    /// Victorian providers resolve stops through PTV when their board flag is
+    /// on, so the picker matches the IDs the board will later ask for.
+    /// Queensland has no PTV equivalent and always uses the bundled database.
+    private func stopAnnotations(in region: MKCoordinateRegion) async throws -> [BusStopAnnotation] {
+        let minLat = region.center.latitude - region.span.latitudeDelta / 2
+        let maxLat = region.center.latitude + region.span.latitudeDelta / 2
+        let minLon = region.center.longitude - region.span.longitudeDelta / 2
+        let maxLon = region.center.longitude + region.span.longitudeDelta / 2
+
+        func annotations(_ stops: [GTFSStop]) -> [BusStopAnnotation] {
+            stops.map { stop in
+                BusStopAnnotation(
+                    stopId: stop.stopId,
+                    stopName: stop.stopName,
+                    stopCode: stop.stopCode,
+                    coordinate: CLLocationCoordinate2D(latitude: stop.stopLat, longitude: stop.stopLon)
+                )
+            }
+        }
+
+        func annotations(_ stops: [PTVStop]) -> [BusStopAnnotation] {
+            stops.map { stop in
+                BusStopAnnotation(
+                    stopId: String(stop.stopId),
+                    stopName: stop.stopName,
+                    stopCode: stop.stopLandmark,
+                    coordinate: CLLocationCoordinate2D(latitude: stop.latitude, longitude: stop.longitude)
+                )
+            }
+        }
+
+        switch provider {
+        case .victorianPTV:
+            return annotations(try await PTVBoardService.victorianBus.stopsInRegion(
+                minLat: minLat, maxLat: maxLat, minLon: minLon, maxLon: maxLon, limit: 150
+            ))
+
+        case .victorianTrainPTV:
+            return annotations(try await PTVBoardService.victorianTrain.stopsInRegion(
+                minLat: minLat, maxLat: maxLat, minLon: minLon, maxLon: maxLon, limit: 200
+            ))
+
+        case .queenslandTransLink:
+            return annotations(try await GTFSDatabase.shared.stopsInRegion(
+                minLat: minLat, maxLat: maxLat, minLon: minLon, maxLon: maxLon, limit: 150
+            ))
+
+        case .queenslandTrainTransLink:
+            return annotations(try await GTFSDatabase.shared.trainStationsInRegion(
+                minLat: minLat, maxLat: maxLat,
+                minLon: minLon, maxLon: maxLon,
+                referenceLatitude: region.center.latitude,
+                referenceLongitude: region.center.longitude
+            ).map(\.stop))
         }
     }
 }

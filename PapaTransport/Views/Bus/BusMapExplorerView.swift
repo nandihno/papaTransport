@@ -646,9 +646,9 @@ struct BusMapExplorerView: View {
         case .queenslandTrainTransLink:
             return QLDTrainMapService.shared
         case .victorianPTV:
-            return VictorianBusService.shared
+            return PTVBoardService.victorianBus
         case .victorianTrainPTV:
-            return VictorianTrainMapService.shared
+            return PTVBoardService.victorianTrain
         }
     }
 
@@ -665,12 +665,12 @@ struct BusMapExplorerView: View {
                 longitude: longitude
             )
         case .victorianPTV:
-            return try await VictorianBusService.shared.fetchFavouriteBusInfo(
+            return try await PTVBoardService.victorianBus.fetchFavouriteBusInfo(
                 referenceLatitude: latitude,
                 longitude: longitude
             )
         case .victorianTrainPTV:
-            return try await VictorianTrainMapService.shared.fetchFavouriteBusInfo(
+            return try await PTVBoardService.victorianTrain.fetchFavouriteBusInfo(
                 referenceLatitude: latitude,
                 longitude: longitude
             )

@@ -23,13 +23,11 @@ struct PapaTransportApp: App {
     @UIApplicationDelegateAdaptor(PapaTransportAppDelegate.self) private var appDelegate
     @StateObject private var favouriteBusStopStore = FavouriteBusStopStore.shared
     @Environment(\.scenePhase) private var scenePhase
-    private var drivingDestinationStore: DrivingDestinationStore { DrivingDestinationStore.shared }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(favouriteBusStopStore)
-                .environment(drivingDestinationStore)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {

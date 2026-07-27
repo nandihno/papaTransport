@@ -59,6 +59,23 @@ protocol BusDataProviding {
     func fetchTripDetail(for departure: BusDeparture, stopId: String) async throws -> BusTripDetail
 }
 
+/// Boards that can also render saved stops.
+protocol FavouritesBoardProviding: BusDataProviding {
+    func fetchFavouriteBusInfo(referenceLatitude latitude: Double, longitude: Double) async throws -> BusInfo
+}
+
+/// Train boards additionally support the map explorer's region query.
+protocol TrainBoardProviding: FavouritesBoardProviding {
+    func fetchBusInfo(
+        minLat: Double,
+        maxLat: Double,
+        minLon: Double,
+        maxLon: Double,
+        referenceLatitude: Double,
+        referenceLongitude: Double
+    ) async throws -> BusInfo
+}
+
 // MARK: - Bus Info (top-level model for BusCard)
 
 struct BusInfo: Identifiable {
