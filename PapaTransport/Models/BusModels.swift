@@ -29,6 +29,7 @@ enum BusProvider: String, Codable, CaseIterable {
     case queenslandTrainTransLink = "queenslandTrainTransLink"
     case victorianPTV = "victorianPTV"
     case victorianTrainPTV = "victorianTrainPTV"
+    case victorianTramPTV = "victorianTramPTV"
 
     var displayName: String {
         switch self {
@@ -40,6 +41,8 @@ enum BusProvider: String, Codable, CaseIterable {
             return "PTV Victoria"
         case .victorianTrainPTV:
             return "PTV Victoria Train"
+        case .victorianTramPTV:
+            return "PTV Victoria Tram"
         }
     }
 
@@ -47,8 +50,44 @@ enum BusProvider: String, Codable, CaseIterable {
         switch self {
         case .queenslandTransLink, .queenslandTrainTransLink:
             return .queensland
-        case .victorianPTV, .victorianTrainPTV:
+        case .victorianPTV, .victorianTrainPTV, .victorianTramPTV:
             return .victorian
+        }
+    }
+
+    // MARK: - Presentation
+    //
+    // Bus, tram and train boards share the same views, so user-facing wording
+    // and symbols come from the provider rather than being hardcoded.
+
+    /// Tab-style title: "Bus", "Trains", "Trams".
+    var modeTitle: String {
+        switch self {
+        case .queenslandTransLink, .victorianPTV: return "Bus"
+        case .queenslandTrainTransLink, .victorianTrainPTV: return "Trains"
+        case .victorianTramPTV: return "Trams"
+        }
+    }
+
+    /// Title-cased plural for headings: "Bus Stops", "Train Stations", "Tram Stops".
+    var stopsTitle: String {
+        switch self {
+        case .queenslandTransLink, .victorianPTV: return "Bus Stops"
+        case .queenslandTrainTransLink, .victorianTrainPTV: return "Train Stations"
+        case .victorianTramPTV: return "Tram Stops"
+        }
+    }
+
+    /// Lower-cased plural for inline sentences: "bus stops", "train stations", "tram stops".
+    var stopsNoun: String {
+        stopsTitle.lowercased()
+    }
+
+    var symbolName: String {
+        switch self {
+        case .queenslandTransLink, .victorianPTV: return "bus.fill"
+        case .queenslandTrainTransLink, .victorianTrainPTV: return "tram.fill"
+        case .victorianTramPTV: return "cablecar.fill"
         }
     }
 }
@@ -232,7 +271,7 @@ extension BusInfo {
         let now = Date()
         let zoneIdentifier = switch provider {
         case .queenslandTransLink, .queenslandTrainTransLink: "Australia/Brisbane"
-        case .victorianPTV, .victorianTrainPTV: "Australia/Melbourne"
+        case .victorianPTV, .victorianTrainPTV, .victorianTramPTV: "Australia/Melbourne"
         }
         let localZone = TimeZone(identifier: zoneIdentifier) ?? .current
         let formatter = DateFormatter()

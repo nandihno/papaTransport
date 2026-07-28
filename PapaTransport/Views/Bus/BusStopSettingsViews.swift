@@ -30,7 +30,7 @@ struct FavouriteBusStopsView: View {
                         systemImage: "star.slash"
                     )
                 } description: {
-                    Text("Tap the + button to browse the map and add \(provider == .victorianTrainPTV ? "train stations" : "bus stops").")
+                    Text("Tap the + button to browse the map and add \(provider.stopsNoun).")
                 }
             } else {
                 ForEach(store.favourites(for: provider)) { stop in
@@ -111,7 +111,7 @@ struct BusStopMapView: View {
                     ForEach(visibleStops) { stop in
                         Marker(
                             stop.stopName,
-                            systemImage: store.contains(stopId: stop.stopId, provider: provider) ? "star.fill" : (provider == .victorianTrainPTV ? "tram.fill" : "bus.fill"),
+                            systemImage: store.contains(stopId: stop.stopId, provider: provider) ? "star.fill" : provider.symbolName,
                             coordinate: stop.coordinate
                         )
                         .tint(store.contains(stopId: stop.stopId, provider: provider) ? .yellow : .blue)
@@ -141,7 +141,7 @@ struct BusStopMapView: View {
             }
 
             if !shouldShowPins {
-                Text("Zoom in to see \(provider == .victorianTrainPTV ? "train stations" : "bus stops")")
+                Text("Zoom in to see \(provider.stopsNoun)")
                     .font(.subheadline.weight(.medium))
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
@@ -149,7 +149,7 @@ struct BusStopMapView: View {
                     .padding(.top, 8)
             }
         }
-        .navigationTitle(provider == .victorianTrainPTV ? "Find Train Stations" : "Find Bus Stops")
+        .navigationTitle("Find \(provider.stopsTitle)")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             locationManager.requestWhenInUseAuthorization()
@@ -220,6 +220,11 @@ struct BusStopMapView: View {
         case .victorianTrainPTV:
             return annotations(try await PTVBoardService.victorianTrain.stopsInRegion(
                 minLat: minLat, maxLat: maxLat, minLon: minLon, maxLon: maxLon, limit: 200
+            ))
+
+        case .victorianTramPTV:
+            return annotations(try await PTVBoardService.victorianTram.stopsInRegion(
+                minLat: minLat, maxLat: maxLat, minLon: minLon, maxLon: maxLon, limit: 150
             ))
 
         case .queenslandTransLink:

@@ -105,19 +105,19 @@ struct BusMapExplorerView: View {
     }
 
     private var screenTitle: String {
-        provider == .victorianTrainPTV ? "Trains" : "Bus"
+        provider.modeTitle
     }
 
     private var nearbyCardTitle: String {
         isRouteSearchActive
-            ? "Nearby Bus Stops for \(normalizedRouteSearchText)"
-            : "Nearby Bus Stops"
+            ? "Nearby \(provider.stopsTitle) for \(normalizedRouteSearchText)"
+            : "Nearby \(provider.stopsTitle)"
     }
 
     private var nearbyEmptyStateMessage: String? {
         guard isRouteSearchActive else { return nil }
 
-        return "No upcoming route \(normalizedRouteSearchText) departures were found at bus stops within 300m of the map center. Pan the map to search elsewhere or clear the route search."
+        return "No upcoming route \(normalizedRouteSearchText) departures were found at \(provider.stopsNoun) within 300m of the map center. Pan the map to search elsewhere or clear the route search."
     }
 
     var body: some View {
@@ -188,7 +188,8 @@ struct BusMapExplorerView: View {
                     BusStopMapPin(
                         stop: stop,
                         isSelected: selectedStopID == stop.id,
-                        accentColor: palette.accent
+                        accentColor: palette.accent,
+                        symbolName: provider.symbolName
                     )
                 }
                 .tag(stop.id)
@@ -211,7 +212,7 @@ struct BusMapExplorerView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         Label(mapSummary, systemImage: "mappin.and.ellipse")
-                            .font(.transit(12, weight: .bold))
+                            .font(.transitBadge)
                             .foregroundStyle(.primary)
 
                         if isLoading {
@@ -221,7 +222,7 @@ struct BusMapExplorerView: View {
                     }
 
                     Text("Pan the map to refresh stops around the center point.")
-                        .font(.transit(11, weight: .medium))
+                        .font(.transitCaption)
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12)
@@ -234,7 +235,7 @@ struct BusMapExplorerView: View {
 
                 if let errorMessage, !errorMessage.isEmpty {
                     Text(errorMessage)
-                        .font(.transit(11, weight: .medium))
+                        .font(.transitCaption)
                         .foregroundStyle(.primary)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
@@ -257,14 +258,14 @@ struct BusMapExplorerView: View {
     private func mapInfoBanner(title: String, detail: String?, icon: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
-                .foregroundStyle(palette.accent)
+                .foregroundStyle(palette.accentText)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.transit(13, weight: .bold))
+                    .font(.transitLabel)
                     .foregroundStyle(palette.textPrimary)
                 if let detail, !detail.isEmpty {
                     Text(detail)
-                        .font(.transit(12, weight: .medium))
+                        .font(.transitCaption)
                         .foregroundStyle(palette.textSecondary)
                 }
             }
@@ -336,7 +337,7 @@ struct BusMapExplorerView: View {
 
                     if !favouriteBusInfo.favouriteStops.isEmpty {
                         BusCard(
-                            title: "Favourite Bus Stops",
+                            title: "Favourite \(provider.stopsTitle)",
                             busInfo: favouriteBusInfo,
                             showsNearby: false,
                             showsFavourites: true
@@ -394,14 +395,14 @@ struct BusMapExplorerView: View {
                 .padding(.top, 10)
 
             HStack(alignment: .center) {
-                Text("Nearby Bus Stops")
-                    .font(.transit(14, weight: .bold))
-                    .foregroundStyle(palette.accentStrong)
+                Text("Nearby \(provider.stopsTitle)")
+                    .font(.transitBody)
+                    .foregroundStyle(palette.accentText)
 
                 Spacer()
 
                 Text(mapSummary)
-                    .font(.transit(11, weight: .bold))
+                    .font(.transitBadge)
                     .foregroundStyle(palette.textSecondary)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
@@ -421,7 +422,7 @@ struct BusMapExplorerView: View {
                 .foregroundStyle(palette.textSecondary)
 
             TextField("Search route number", text: $routeSearchText)
-                .font(.transit(15, weight: .semibold))
+                .font(.transitBody)
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
                 .keyboardType(.numbersAndPunctuation)
@@ -649,6 +650,8 @@ struct BusMapExplorerView: View {
             return PTVBoardService.victorianBus
         case .victorianTrainPTV:
             return PTVBoardService.victorianTrain
+        case .victorianTramPTV:
+            return PTVBoardService.victorianTram
         }
     }
 
@@ -671,6 +674,11 @@ struct BusMapExplorerView: View {
             )
         case .victorianTrainPTV:
             return try await PTVBoardService.victorianTrain.fetchFavouriteBusInfo(
+                referenceLatitude: latitude,
+                longitude: longitude
+            )
+        case .victorianTramPTV:
+            return try await PTVBoardService.victorianTram.fetchFavouriteBusInfo(
                 referenceLatitude: latitude,
                 longitude: longitude
             )
@@ -721,6 +729,7 @@ private struct BusStopMapPin: View {
     let stop: NearbyBusStop
     let isSelected: Bool
     let accentColor: Color
+    let symbolName: String
 
     var body: some View {
         VStack(spacing: 6) {
@@ -730,7 +739,7 @@ private struct BusStopMapPin: View {
                     .frame(width: isSelected ? 36 : 30, height: isSelected ? 36 : 30)
                     .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
 
-                Image(systemName: "bus.fill")
+                Image(systemName: symbolName)
                     .font(.system(size: isSelected ? 15 : 13, weight: .bold))
                     .foregroundStyle(isSelected ? Color.white : accentColor)
             }

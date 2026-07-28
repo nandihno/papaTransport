@@ -60,6 +60,7 @@ struct CommutingSettingsView: View {
 
                 if transportRegion == .victorian {
                     victorianTrainDataSection
+                    victorianTramSection
                     ptvTimetableAPISection
                 }
 
@@ -501,6 +502,28 @@ struct CommutingSettingsView: View {
     /// Only Queensland still ships a bundled database to manage.
     private var shouldShowBusManagement: Bool {
         transportRegion == .queensland && busDataReady
+    }
+
+    private var victorianTramSection: some View {
+        Section {
+            NavigationLink {
+                FavouriteBusStopsView(provider: .victorianTramPTV)
+            } label: {
+                HStack {
+                    Text("Favourite Stops")
+                    Spacer()
+                    Text("\(FavouriteBusStopStore.shared.count(for: .victorianTramPTV))")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Label("Nearby tram stops are shown automatically on the Trams tab.", systemImage: "location.fill")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("Victorian Tram")
+        } footer: {
+            Text("Melbourne tram departures and live predictions come from the PTV Timetable API.")
+        }
     }
 
     private var ptvTimetableAPISection: some View {

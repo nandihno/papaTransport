@@ -214,7 +214,7 @@ struct TrainMapExplorerView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         Label(mapSummary, systemImage: "tram.fill")
-                            .font(.transit(12, weight: .bold))
+                            .font(.transitBadge)
                             .foregroundStyle(.primary)
 
                         if isLoading {
@@ -226,7 +226,7 @@ struct TrainMapExplorerView: View {
                     Text(isZoomedOutTooFar
                          ? "Zoom in (within ~50 km) to load train stations."
                          : "Pan the map to load train stations in the visible area.")
-                        .font(.transit(11, weight: .medium))
+                        .font(.transitCaption)
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12)
@@ -239,7 +239,7 @@ struct TrainMapExplorerView: View {
 
                 if let errorMessage, !errorMessage.isEmpty {
                     Text(errorMessage)
-                        .font(.transit(11, weight: .medium))
+                        .font(.transitCaption)
                         .foregroundStyle(.primary)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
@@ -262,14 +262,14 @@ struct TrainMapExplorerView: View {
     private func mapInfoBanner(title: String, detail: String?, icon: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
-                .foregroundStyle(palette.accent)
+                .foregroundStyle(palette.accentText)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.transit(13, weight: .bold))
+                    .font(.transitLabel)
                     .foregroundStyle(palette.textPrimary)
                 if let detail, !detail.isEmpty {
                     Text(detail)
-                        .font(.transit(12, weight: .medium))
+                        .font(.transitCaption)
                         .foregroundStyle(palette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -392,13 +392,13 @@ struct TrainMapExplorerView: View {
 
             HStack(alignment: .center) {
                 Text("Train Stations in View")
-                    .font(.transit(14, weight: .bold))
-                    .foregroundStyle(palette.accentStrong)
+                    .font(.transitBody)
+                    .foregroundStyle(palette.accentText)
 
                 Spacer()
 
                 Text(mapSummary)
-                    .font(.transit(11, weight: .bold))
+                    .font(.transitBadge)
                     .foregroundStyle(palette.textSecondary)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
@@ -418,11 +418,11 @@ struct TrainMapExplorerView: View {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 5) {
                         Label("Train Stations in View", systemImage: "location.circle.fill")
-                            .font(.transit(18, weight: .bold))
-                            .foregroundStyle(palette.accent)
+                            .font(.transitHeadline)
+                            .foregroundStyle(palette.accentText)
 
                         Text(userCoordinateDescription)
-                            .font(.transit(12, weight: .medium))
+                            .font(.transitCaption)
                             .foregroundStyle(palette.textSecondary)
                     }
 
@@ -434,7 +434,7 @@ struct TrainMapExplorerView: View {
                                 .scaleEffect(0.9)
                         } else {
                             Text(nearbyStationsLabel)
-                                .font(.transit(11, weight: .bold))
+                                .font(.transitBadge)
                                 .foregroundStyle(palette.textSecondary)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
@@ -452,11 +452,11 @@ struct TrainMapExplorerView: View {
                             systemImage: "location.slash.fill"
                         )
                         .font(.subheadline)
-                        .foregroundStyle(AppTheme.warning)
+                        .foregroundStyle(palette.warning)
                     } else if let errorMessage, !errorMessage.isEmpty {
                         Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                             .font(.subheadline)
-                            .foregroundStyle(AppTheme.warning)
+                            .foregroundStyle(palette.warning)
                     } else if displayedNearbyStops.isEmpty && displayedFavouriteStops.isEmpty {
                         Label(
                             "No train stations were found in the visible map area, and no favourites currently have departures.",
@@ -807,7 +807,7 @@ private struct QLDTrainNetworkStatusCard: View {
     @Environment(\.themePalette) private var palette
 
     private var statusColor: Color {
-        alerts.isEmpty ? AppTheme.success : AppTheme.warning
+        alerts.isEmpty ? palette.success : palette.warning
     }
 
     private var statusIcon: String {
@@ -824,8 +824,8 @@ private struct QLDTrainNetworkStatusCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Label("Train Network Status", systemImage: "tram.fill")
-                        .font(.transit(16, weight: .bold))
-                        .foregroundStyle(palette.accent)
+                        .font(.transitHeadline)
+                        .foregroundStyle(palette.accentText)
                     Spacer()
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -847,8 +847,8 @@ private struct QLDTrainNetworkStatusCard: View {
                         Image(systemName: statusIcon)
                             .foregroundStyle(statusColor)
                         Text(statusLabel)
-                            .font(.transit(13, weight: .bold))
-                            .foregroundStyle(alerts.isEmpty ? AppTheme.success : palette.textPrimary)
+                            .font(.transitLabel)
+                            .foregroundStyle(alerts.isEmpty ? palette.success : palette.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -870,7 +870,7 @@ private struct TrainStatusSummaryCard: View {
     @Environment(\.themePalette) private var palette
 
     private var statusColor: Color {
-        train.serviceIsGood ? AppTheme.success : AppTheme.warning
+        train.serviceIsGood ? palette.success : palette.warning
     }
 
     private var secondarySummary: String? {
@@ -890,11 +890,11 @@ private struct TrainStatusSummaryCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Label("Train Line Status", systemImage: "tram.fill")
-                        .font(.transit(16, weight: .bold))
-                        .foregroundStyle(palette.accent)
+                        .font(.transitHeadline)
+                        .foregroundStyle(palette.accentText)
                     Spacer()
                     Text(train.melbourneTimeAtFetch)
-                        .font(.transit(11, weight: .bold))
+                        .font(.transitBadge)
                         .foregroundStyle(palette.textSecondary)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
@@ -902,21 +902,21 @@ private struct TrainStatusSummaryCard: View {
                 }
 
                 Text(train.lineName)
-                    .font(.transit(24, weight: .heavy))
+                    .font(.transitTitle)
                     .foregroundStyle(palette.textPrimary)
 
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: train.serviceIsGood ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                         .foregroundStyle(statusColor)
                     Text(train.serviceStatusMessage)
-                        .font(.transit(13, weight: .bold))
-                        .foregroundStyle(train.serviceIsGood ? AppTheme.success : palette.textPrimary)
+                        .font(.transitLabel)
+                        .foregroundStyle(train.serviceIsGood ? palette.success : palette.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if let secondarySummary {
                     Text(secondarySummary)
-                        .font(.transit(12, weight: .medium))
+                        .font(.transitCaption)
                         .foregroundStyle(palette.textSecondary)
                 }
             }
@@ -937,7 +937,7 @@ private struct TrainPlannedWorksBoard: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Label("Planned Works (\(totalCount))", systemImage: "wrench.and.screwdriver.fill")
-                        .font(.transit(16, weight: .bold))
+                        .font(.transitHeadline)
                         .foregroundStyle(palette.textSecondary)
                     Spacer()
                     HStack(spacing: 8) {
@@ -1050,7 +1050,7 @@ private struct TrainStationSection: View {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(stop.stopName)
-                            .font(.transit(18, weight: .heavy))
+                            .font(.transitHeadline)
                             .foregroundStyle(palette.textPrimary)
                             .multilineTextAlignment(.leading)
 
@@ -1065,7 +1065,7 @@ private struct TrainStationSection: View {
 
                     HStack(spacing: 10) {
                         Text("\(stop.distanceMeters)m away")
-                            .font(.transit(11, weight: .bold))
+                            .font(.transitBadge)
                             .foregroundStyle(isExpanded ? palette.buttonForeground : palette.textSecondary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
@@ -1177,9 +1177,9 @@ private struct LiveMetroDeparturesBlock: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "bolt.horizontal.circle.fill")
-                    .foregroundStyle(palette.accent)
+                    .foregroundStyle(palette.accentText)
                 Text("Live ETA / ETD")
-                    .font(.transit(13, weight: .bold))
+                    .font(.transitLabel)
                     .foregroundStyle(palette.textPrimary)
                 Text("MetroTrains")
                     .font(.caption2.weight(.semibold))
@@ -1196,7 +1196,7 @@ private struct LiveMetroDeparturesBlock: View {
             if let errorMessage, !errorMessage.isEmpty {
                 Text(errorMessage)
                     .font(.caption2)
-                    .foregroundStyle(AppTheme.warning)
+                    .foregroundStyle(palette.warning)
             } else if !isLoading && hasLoaded && departures.isEmpty {
                 Text("No live MetroTrains departures for this station.")
                     .font(.caption2)
@@ -1205,7 +1205,7 @@ private struct LiveMetroDeparturesBlock: View {
             } else if !departures.isEmpty {
                 directionBlock(label: "Inbound → City",
                                symbol: "arrow.up.circle.fill",
-                               color: AppTheme.info,
+                               color: palette.info,
                                rows: inbound)
                 directionBlock(label: "Outbound",
                                symbol: "arrow.down.circle.fill",
@@ -1278,7 +1278,7 @@ private struct TrainLineGroupSection: View {
             Button(action: onToggleExpanded) {
                 HStack(spacing: 12) {
                     Text(group.lineName)
-                        .font(.transit(13, weight: .heavy))
+                        .font(.transitLabel)
                         .foregroundStyle(Color.black.opacity(0.84))
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
@@ -1290,12 +1290,12 @@ private struct TrainLineGroupSection: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text(group.nextDepartureTitle)
-                            .font(.transit(15, weight: .bold))
+                            .font(.transitBody)
                             .foregroundStyle(palette.textPrimary)
                             .lineLimit(1)
 
                         Text(group.secondarySummary)
-                            .font(.transit(11, weight: .medium))
+                            .font(.transitCaption)
                             .foregroundStyle(palette.textSecondary)
                             .lineLimit(1)
                     }
@@ -1307,18 +1307,18 @@ private struct TrainLineGroupSection: View {
                             HStack(alignment: .firstTextBaseline, spacing: 4) {
                                 let duration = nextDeparture.minutesAway.durationComponents
                                 Text(duration.value)
-                                    .font(.transit(26, weight: .heavy).monospacedDigit())
+                                    .font(.transitDisplay.monospacedDigit())
                                     .foregroundStyle(palette.textPrimary)
                                 if !duration.unit.isEmpty {
                                     Text(duration.unit)
-                                        .font(.transit(11, weight: .bold))
+                                        .font(.transitBadge)
                                         .foregroundStyle(palette.textSecondary)
                                 }
                             }
                         }
 
                         Text(group.departureCountLabel)
-                            .font(.transit(11, weight: .bold))
+                            .font(.transitBadge)
                             .foregroundStyle(palette.textSecondary)
                     }
 
@@ -1387,7 +1387,7 @@ private struct TrainDepartureRow: View {
             HStack(spacing: 14) {
                 if showsRouteBadge {
                     Text(routeBadgeText)
-                        .font(.transit(12, weight: .heavy))
+                        .font(.transitLabel)
                         .foregroundStyle(Color.black.opacity(0.84))
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
@@ -1400,18 +1400,18 @@ private struct TrainDepartureRow: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(primaryTitle)
-                        .font(.transit(15, weight: .bold))
+                        .font(.transitBody)
                         .foregroundStyle(palette.textPrimary)
                         .lineLimit(1)
 
                     HStack(spacing: 8) {
                         Text("Sched \(departure.scheduledTime)")
-                            .font(.transit(11, weight: .medium))
+                            .font(.transitCaption)
                             .foregroundStyle(palette.textSecondary)
 
                         if let predictedTime = departure.predictedTime {
                             Text("Pred \(predictedTime)")
-                                .font(.transit(11, weight: .bold))
+                                .font(.transitBadge)
                                 .foregroundStyle(statusColor)
                         }
                     }
@@ -1423,17 +1423,17 @@ private struct TrainDepartureRow: View {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         let duration = departure.minutesAway.durationComponents
                         Text(duration.value)
-                            .font(.transit(28, weight: .heavy).monospacedDigit())
+                            .font(.transitDisplay.monospacedDigit())
                             .foregroundStyle(palette.textPrimary)
                         if !duration.unit.isEmpty {
                             Text(duration.unit)
-                                .font(.transit(11, weight: .bold))
+                                .font(.transitBadge)
                                 .foregroundStyle(palette.textSecondary)
                         }
                     }
 
                     Text(departure.status.rawValue)
-                        .font(.transit(11, weight: .bold))
+                        .font(.transitBadge)
                         .foregroundStyle(statusColor)
                 }
 
@@ -1458,13 +1458,7 @@ private struct TrainDepartureRow: View {
     }
 
     private var statusColor: Color {
-        switch departure.status {
-        case .onTime: return AppTheme.success
-        case .early: return AppTheme.info
-        case .late: return AppTheme.warning
-        case .noData: return palette.textSecondary
-        case .skipped: return AppTheme.danger
-        }
+        palette.color(for: departure.status)
     }
 }
 
@@ -1531,7 +1525,7 @@ private struct TrainTripDetailSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 Text(request.departure.routeShortName)
-                    .font(.transit(22, weight: .heavy).monospacedDigit())
+                    .font(.transitTitle.monospacedDigit())
                     .foregroundStyle(Color.black.opacity(0.84))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -1540,7 +1534,7 @@ private struct TrainTripDetailSheet: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(tripDetail.headsign ?? tripDetail.routeLongName)
-                        .font(.transit(18, weight: .bold))
+                        .font(.transitHeadline)
                         .foregroundStyle(palette.textPrimary)
                     Text(tripDetail.routeLongName)
                         .font(.subheadline)
@@ -1578,11 +1572,11 @@ private struct TrainTripDetailSheet: View {
     private func stopsCard(_ tripDetail: BusTripDetail) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Stops From Here")
-                .font(.transit(18, weight: .bold))
+                .font(.transitHeadline)
                 .foregroundStyle(palette.textPrimary)
 
             ForEach(Array(tripDetail.stopsFromSelected.enumerated()), id: \.element.id) { index, stop in
-                VictorianTripStopRow(
+                TripStopRow(
                     stop: stop,
                     isLast: index == tripDetail.stopsFromSelected.count - 1
                 )
@@ -1600,7 +1594,7 @@ private struct TrainTripDetailSheet: View {
                 .font(.caption.bold())
                 .foregroundStyle(palette.textSecondary)
             Text(value)
-                .font(.transit(15, weight: .bold))
+                .font(.transitBody)
                 .foregroundStyle(palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Text(secondary)
@@ -1652,114 +1646,6 @@ private func trainMapService(for provider: BusProvider) -> any BusDataProviding 
         return QLDTrainMapService.shared
     default:
         return PTVBoardService.victorianTrain
-    }
-}
-
-private struct VictorianTripStopRow: View {
-    let stop: BusTripStopDetail
-    let isLast: Bool
-
-    @Environment(\.themePalette) private var palette
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(spacing: 0) {
-                Circle()
-                    .fill(markerColor)
-                    .frame(width: stop.isSelectedStop ? 12 : 9, height: stop.isSelectedStop ? 12 : 9)
-                    .padding(.top, 4)
-
-                if !isLast {
-                    Rectangle()
-                        .fill(palette.textTertiary.opacity(0.35))
-                        .frame(width: 2, height: 28)
-                        .padding(.top, 4)
-                }
-            }
-            .frame(width: 14)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(stop.stopName)
-                        .font(.transit(15, weight: .bold))
-                        .foregroundStyle(palette.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if stop.isSelectedStop {
-                        Text("Selected")
-                            .font(.caption2.bold())
-                            .foregroundStyle(palette.buttonForeground)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
-                            .background(palette.buttonBackground, in: Capsule())
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    if let stopCode = stop.stopCode, !stopCode.isEmpty {
-                        Text("Stop #\(stopCode)")
-                            .font(.caption)
-                            .foregroundStyle(palette.textSecondary)
-                    }
-
-                    if let scheduledTime = stop.scheduledTime {
-                        Text(scheduledTime)
-                            .font(.caption.bold())
-                            .foregroundStyle(stop.isSelectedStop ? palette.accent : palette.textSecondary)
-                    }
-
-                    if let predictedTime = stop.predictedTime {
-                        Text("Pred \(predictedTime)")
-                            .font(.caption.bold())
-                            .foregroundStyle(statusColor)
-                    }
-
-                    if let status = stop.status {
-                        Text(status.rawValue)
-                            .font(.caption2.bold())
-                            .foregroundStyle(statusColor)
-                    }
-
-                    if let delaySeconds = stop.delaySeconds,
-                       let status = stop.status,
-                       status != .noData,
-                       status != .skipped,
-                       delaySeconds != 0 {
-                        let delayText = delaySeconds > 0 ? "+\(delaySeconds)s" : "\(delaySeconds)s"
-                        Text(delayText)
-                            .font(.caption2)
-                            .foregroundStyle(statusColor)
-                    }
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var markerColor: Color {
-        if stop.isSelectedStop {
-            return palette.accent
-        }
-        if let status = stop.status {
-            return color(for: status)
-        }
-        return palette.textTertiary.opacity(0.75)
-    }
-
-    private var statusColor: Color {
-        guard let status = stop.status else { return palette.textSecondary }
-        return color(for: status)
-    }
-
-    private func color(for status: BusDepartureStatus) -> Color {
-        switch status {
-        case .onTime: return AppTheme.success
-        case .early: return AppTheme.info
-        case .late: return AppTheme.warning
-        case .noData: return palette.textSecondary
-        case .skipped: return AppTheme.danger
-        }
     }
 }
 

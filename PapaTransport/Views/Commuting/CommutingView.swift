@@ -94,6 +94,8 @@ struct CommutingView: View {
             return "Bus"
         case 1:
             return "Trains"
+        case 3:
+            return "Trams"
         default:
             return "Plan"
         }
@@ -166,6 +168,16 @@ struct CommutingView: View {
                         Label("Trains", systemImage: "tram.fill")
                     }
 
+                // Trams are Victoria-only. The tag stays 3 so Plan keeps tag 2
+                // and selection is not silently reinterpreted between regions.
+                if transportRegion == .victorian {
+                    tramsTab
+                        .tag(3)
+                        .tabItem {
+                            Label("Trams", systemImage: "cablecar.fill")
+                        }
+                }
+
                 routePlannerTab
                     .tag(2)
                     .tabItem {
@@ -174,6 +186,13 @@ struct CommutingView: View {
             }
             .onChange(of: selectedTab) { _, _ in
                 fetchData()
+            }
+            .onChange(of: transportRegion) { _, newRegion in
+                // The Trams tab disappears outside Victoria; leaving it selected
+                // would show an empty TabView.
+                if newRegion != .victorian && selectedTab == 3 {
+                    selectedTab = 0
+                }
             }
             .onChange(of: showSettings) { _, isPresented in
                 if !isPresented {
@@ -188,7 +207,7 @@ struct CommutingView: View {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { showSettings = true } label: {
                             Image(systemName: "gearshape.fill")
-                                .foregroundStyle(palette.accent)
+                                .foregroundStyle(palette.accentText)
                         }
                     }
                 }
@@ -198,6 +217,9 @@ struct CommutingView: View {
             }
         }
         .screenTheme(AppTheme.transport)
+        // Picks up the remaining built-in text styles (.caption, .subheadline …)
+        // so they match the rounded design baked into the transit* roles.
+        .fontDesign(.rounded)
         .task { await performFetch() }
     }
 
@@ -261,6 +283,19 @@ struct CommutingView: View {
         }
     }
 
+    // MARK: - Trams Tab
+
+    private var tramsTab: some View {
+        BusMapExplorerView(
+            provider: .victorianTramPTV,
+            onOpenSettings: { showSettings = true },
+            onRefresh: { await performFetch() },
+            autoRefreshEnabled: selectedTab == 3,
+            statusMessage: nil,
+            statusDetail: nil
+        )
+    }
+
     // MARK: - Route Planner Tab
 
     private var routePlannerTab: some View {
@@ -279,7 +314,7 @@ struct CommutingView: View {
                     .scaleEffect(0.85)
                 Text("Loading…")
             }
-            .font(.transit(13, weight: .medium))
+            .font(.transitCaption)
             .foregroundStyle(palette.textSecondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 2)
@@ -287,10 +322,10 @@ struct CommutingView: View {
         case .loaded(let snapshot):
             HStack(spacing: 4) {
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(AppTheme.success)
+                    .foregroundStyle(palette.success)
                 Text("Last updated at \(snapshot.fetchedAt.formatted(date: .omitted, time: .shortened))")
             }
-            .font(.transit(12, weight: .medium))
+            .font(.transitCaption)
             .foregroundStyle(palette.textSecondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 2)
@@ -305,11 +340,11 @@ struct CommutingView: View {
                     .scaleEffect(0.8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(progress.stage)
-                        .font(.transit(13, weight: .bold))
+                        .font(.transitLabel)
                         .foregroundStyle(palette.textPrimary)
                     if !progress.detail.isEmpty {
                         Text(progress.detail)
-                            .font(.transit(12, weight: .medium))
+                            .font(.transitCaption)
                             .foregroundStyle(palette.textSecondary)
                     }
                 }
@@ -367,15 +402,15 @@ private struct CommuteConfigurationCard: View {
         CardContainer {
             VStack(alignment: .leading, spacing: 10) {
                 Label("Commuting", systemImage: "car.2.fill")
-                    .font(.transit(18, weight: .bold))
-                    .foregroundStyle(palette.accent)
+                    .font(.transitHeadline)
+                    .foregroundStyle(palette.accentText)
 
                 Text("No commute cards are enabled for the current region.")
-                    .font(.transit(14, weight: .medium))
+                    .font(.transitCaption)
                     .foregroundStyle(palette.textPrimary)
 
                 Text("Open Settings to choose which transport cards should appear.")
-                    .font(.transit(12, weight: .medium))
+                    .font(.transitCaption)
                     .foregroundStyle(palette.textSecondary)
             }
         }

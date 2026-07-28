@@ -17,10 +17,36 @@ struct ThemePalette {
     let surfaceOverlay: Color
     let accent: Color
     let accentStrong: Color
+    /// Accent tuned for *text*. `accent` and `accentStrong` are fill colours —
+    /// they only reach 3:1 against the light surfaces, so they must not carry
+    /// type. Use this for headings and any accented label.
+    let accentText: Color
     let textPrimary: Color
     let textSecondary: Color
     let textTertiary: Color
     let buttonForeground: Color
+
+    // Semantic status colours. These are per-scheme because a colour that reads
+    // well on the near-black dark surfaces washes out completely on the cream
+    // light ones — the light variants below are the darkest hues that still
+    // clear 4.5:1 against both `surface` and `surfaceRaised`.
+    let success: Color
+    let warning: Color
+    let danger: Color
+    let info: Color
+
+    let outline: Color
+    let shadow: Color
+
+    func color(for status: BusDepartureStatus) -> Color {
+        switch status {
+        case .onTime: success
+        case .early: info
+        case .late: warning
+        case .noData: textSecondary
+        case .skipped: danger
+        }
+    }
 
     var screenBackground: LinearGradient {
         LinearGradient(
@@ -40,7 +66,7 @@ struct ThemePalette {
 
     var cardBorder: LinearGradient {
         LinearGradient(
-            colors: [accentStrong.opacity(0.24), AppTheme.outline],
+            colors: [accentStrong.opacity(0.24), outline],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
@@ -64,14 +90,6 @@ struct ThemePalette {
 }
 
 enum AppTheme {
-    static let outline = Color.white.opacity(0.08)
-    static let shadow = Color.black.opacity(0.34)
-
-    static let success = Color(red: 0.314, green: 0.839, blue: 0.506)
-    static let warning = Color(red: 1.000, green: 0.741, blue: 0.322)
-    static let danger = Color(red: 1.000, green: 0.450, blue: 0.360)
-    static let info = Color(red: 0.420, green: 0.760, blue: 1.000)
-
     static let transport = ThemeSet(
         light: ThemePalette(
             backgroundBase: Color(red: 0.988, green: 0.949, blue: 0.902),
@@ -81,89 +99,54 @@ enum AppTheme {
             surfaceOverlay: Color(red: 0.937, green: 0.808, blue: 0.675),
             accent: Color(red: 0.898, green: 0.431, blue: 0.000),
             accentStrong: Color(red: 1.000, green: 0.624, blue: 0.133),
+            accentText: Color(red: 0.585, green: 0.254, blue: 0.000),
             textPrimary: Color(red: 0.220, green: 0.122, blue: 0.055),
             textSecondary: Color(red: 0.420, green: 0.259, blue: 0.141),
             textTertiary: Color(red: 0.588, green: 0.420, blue: 0.286),
-            buttonForeground: Color.white.opacity(0.97)
+            buttonForeground: Color.white.opacity(0.97),
+            success: Color(red: 0.057, green: 0.410, blue: 0.175),
+            warning: Color(red: 0.540, green: 0.288, blue: 0.000),
+            danger: Color(red: 0.700, green: 0.105, blue: 0.014),
+            info: Color(red: 0.000, green: 0.347, blue: 0.695),
+            outline: Color.black.opacity(0.10),
+            shadow: Color.black.opacity(0.10)
         ),
         dark: ThemePalette(
-        backgroundBase: Color(red: 0.106, green: 0.055, blue: 0.027),
-        backgroundTop: Color(red: 0.176, green: 0.082, blue: 0.031),
-        surface: Color(red: 0.161, green: 0.078, blue: 0.031),
-        surfaceRaised: Color(red: 0.216, green: 0.102, blue: 0.039),
-        surfaceOverlay: Color(red: 0.275, green: 0.133, blue: 0.047),
-        accent: Color(red: 1.000, green: 0.541, blue: 0.000),
-        accentStrong: Color(red: 1.000, green: 0.663, blue: 0.180),
-        textPrimary: Color(red: 1.000, green: 0.949, blue: 0.890),
-        textSecondary: Color(red: 0.906, green: 0.702, blue: 0.541),
-        textTertiary: Color(red: 0.725, green: 0.557, blue: 0.431),
-        buttonForeground: Color.black.opacity(0.82)
-        )
-    )
-
-    static let weather = ThemeSet(
-        light: ThemePalette(
-            backgroundBase: Color(red: 0.929, green: 0.973, blue: 1.000),
-            backgroundTop: Color(red: 0.741, green: 0.906, blue: 1.000),
-            surface: Color(red: 0.902, green: 0.957, blue: 1.000),
-            surfaceRaised: Color(red: 0.773, green: 0.894, blue: 0.980),
-            surfaceOverlay: Color(red: 0.655, green: 0.851, blue: 0.965),
-            accent: Color(red: 0.145, green: 0.573, blue: 0.937),
-            accentStrong: Color(red: 0.420, green: 0.792, blue: 1.000),
-            textPrimary: Color(red: 0.055, green: 0.220, blue: 0.369),
-            textSecondary: Color(red: 0.176, green: 0.365, blue: 0.541),
-            textTertiary: Color(red: 0.345, green: 0.529, blue: 0.694),
-            buttonForeground: Color.white.opacity(0.97)
-        ),
-        dark: ThemePalette(
-        backgroundBase: Color(red: 0.031, green: 0.118, blue: 0.235),
-        backgroundTop: Color(red: 0.082, green: 0.267, blue: 0.451),
-        surface: Color(red: 0.071, green: 0.208, blue: 0.357),
-        surfaceRaised: Color(red: 0.110, green: 0.286, blue: 0.463),
-        surfaceOverlay: Color(red: 0.149, green: 0.365, blue: 0.561),
-        accent: Color(red: 0.420, green: 0.792, blue: 1.000),
-        accentStrong: Color(red: 0.675, green: 0.894, blue: 1.000),
-        textPrimary: Color(red: 0.937, green: 0.980, blue: 1.000),
-        textSecondary: Color(red: 0.698, green: 0.835, blue: 0.949),
-        textTertiary: Color(red: 0.514, green: 0.698, blue: 0.824),
-        buttonForeground: Color(red: 0.027, green: 0.149, blue: 0.286)
-        )
-    )
-
-    static let health = ThemeSet(
-        light: ThemePalette(
-            backgroundBase: Color(red: 1.000, green: 0.949, blue: 0.953),
-            backgroundTop: Color(red: 1.000, green: 0.820, blue: 0.835),
-            surface: Color(red: 1.000, green: 0.929, blue: 0.937),
-            surfaceRaised: Color(red: 0.980, green: 0.796, blue: 0.820),
-            surfaceOverlay: Color(red: 0.953, green: 0.655, blue: 0.694),
-            accent: Color(red: 0.851, green: 0.200, blue: 0.235),
-            accentStrong: Color(red: 1.000, green: 0.353, blue: 0.322),
-            textPrimary: Color(red: 0.369, green: 0.071, blue: 0.114),
-            textSecondary: Color(red: 0.549, green: 0.176, blue: 0.224),
-            textTertiary: Color(red: 0.682, green: 0.333, blue: 0.380),
-            buttonForeground: Color.white.opacity(0.97)
-        ),
-        dark: ThemePalette(
-        backgroundBase: Color(red: 0.149, green: 0.027, blue: 0.051),
-        backgroundTop: Color(red: 0.267, green: 0.043, blue: 0.082),
-        surface: Color(red: 0.235, green: 0.051, blue: 0.086),
-        surfaceRaised: Color(red: 0.333, green: 0.071, blue: 0.118),
-        surfaceOverlay: Color(red: 0.427, green: 0.102, blue: 0.165),
-        accent: Color(red: 1.000, green: 0.353, blue: 0.322),
-        accentStrong: Color(red: 1.000, green: 0.569, blue: 0.529),
-        textPrimary: Color(red: 1.000, green: 0.941, blue: 0.941),
-        textSecondary: Color(red: 0.961, green: 0.733, blue: 0.741),
-        textTertiary: Color(red: 0.761, green: 0.502, blue: 0.510),
-        buttonForeground: Color.white.opacity(0.96)
+            backgroundBase: Color(red: 0.106, green: 0.055, blue: 0.027),
+            backgroundTop: Color(red: 0.176, green: 0.082, blue: 0.031),
+            surface: Color(red: 0.161, green: 0.078, blue: 0.031),
+            surfaceRaised: Color(red: 0.216, green: 0.102, blue: 0.039),
+            surfaceOverlay: Color(red: 0.275, green: 0.133, blue: 0.047),
+            accent: Color(red: 1.000, green: 0.541, blue: 0.000),
+            accentStrong: Color(red: 1.000, green: 0.663, blue: 0.180),
+            accentText: Color(red: 1.000, green: 0.663, blue: 0.180),
+            textPrimary: Color(red: 1.000, green: 0.949, blue: 0.890),
+            textSecondary: Color(red: 0.906, green: 0.702, blue: 0.541),
+            textTertiary: Color(red: 0.725, green: 0.557, blue: 0.431),
+            buttonForeground: Color.black.opacity(0.82),
+            success: Color(red: 0.314, green: 0.839, blue: 0.506),
+            warning: Color(red: 1.000, green: 0.741, blue: 0.322),
+            danger: Color(red: 1.000, green: 0.450, blue: 0.360),
+            info: Color(red: 0.420, green: 0.760, blue: 1.000),
+            outline: Color.white.opacity(0.08),
+            shadow: Color.black.opacity(0.34)
         )
     )
 }
 
+// MARK: - Type scale
+
 extension Font {
-    static func transit(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .rounded)
-    }
+    /// Semantic type scale. Every role is built on a `TextStyle` so it responds
+    /// to Dynamic Type; the rounded design is baked in so a role stays correct
+    /// regardless of any ancestor `fontDesign` modifier.
+    static let transitDisplay = Font.system(.title, design: .rounded, weight: .heavy)
+    static let transitTitle = Font.system(.title2, design: .rounded, weight: .heavy)
+    static let transitHeadline = Font.system(.title3, design: .rounded, weight: .bold)
+    static let transitBody = Font.system(.subheadline, design: .rounded, weight: .semibold)
+    static let transitLabel = Font.system(.footnote, design: .rounded, weight: .semibold)
+    static let transitCaption = Font.system(.caption, design: .rounded, weight: .regular)
+    static let transitBadge = Font.system(.caption2, design: .rounded, weight: .bold)
 }
 
 extension Int {
@@ -183,7 +166,7 @@ struct TransitPrimaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.transit(18, weight: .bold))
+            .font(.transitHeadline)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16)
             .background(palette.buttonBackground)
@@ -212,7 +195,7 @@ private struct TransitCardModifier: ViewModifier {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .strokeBorder(palette.cardBorder, lineWidth: 1)
             }
-            .shadow(color: AppTheme.shadow, radius: 22, y: 10)
+            .shadow(color: palette.shadow, radius: 22, y: 10)
     }
 }
 

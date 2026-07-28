@@ -23,7 +23,7 @@ struct BusCard: View {
     @State private var expandedStopIDs: Set<String> = []
 
     init(
-        title: String = "Bus Departures",
+        title: String = "Departures",
         busInfo: BusInfo,
         selectedStopID: Binding<String?>? = nil,
         showsNearby: Bool = true,
@@ -59,15 +59,19 @@ struct BusCard: View {
     }
 
     private var vehicleIconName: String {
-        busInfo.provider == .victorianTrainPTV ? "tram.fill" : "bus.fill"
+        busInfo.provider.symbolName
     }
 
     private var nearbySubjectNoun: String {
-        busInfo.provider == .victorianTrainPTV ? "train stations" : "bus stops"
+        busInfo.provider.stopsNoun
     }
 
     private var nearbySearchRadiusDescription: String {
-        busInfo.provider == .victorianTrainPTV ? "5km" : "300m"
+        switch busInfo.provider {
+        case .queenslandTrainTransLink, .victorianTrainPTV: return "5km"
+        case .victorianTramPTV: return "250m"
+        default: return "300m"
+        }
     }
 
     private var emptyStateMessage: String {
@@ -76,9 +80,7 @@ struct BusCard: View {
         }
 
         if showsFavourites {
-            return busInfo.provider == .victorianTrainPTV
-                ? "No saved favourite train stations currently have departures."
-                : "No saved favourite bus stops currently have departures."
+            return "No saved favourite \(busInfo.provider.stopsNoun) currently have departures."
         }
 
         return "No \(nearbySubjectNoun) found within \(nearbySearchRadiusDescription) of the map center. Pan the map to search elsewhere."
@@ -88,11 +90,11 @@ struct BusCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label(title, systemImage: vehicleIconName)
-                    .font(.transit(18, weight: .bold))
-                    .foregroundStyle(palette.accentStrong)
+                    .font(.transitHeadline)
+                    .foregroundStyle(palette.accentText)
                 Spacer()
                 Text(busInfo.localTimeAtFetch)
-                    .font(.transit(11, weight: .bold))
+                    .font(.transitBadge)
                     .foregroundStyle(palette.textSecondary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
@@ -109,7 +111,7 @@ struct BusCard: View {
                 Label("Location unavailable. Enable Location Services to see nearby \(nearbySubjectNoun).",
                       systemImage: "location.slash.fill")
                     .font(.subheadline)
-                    .foregroundStyle(AppTheme.warning)
+                    .foregroundStyle(palette.warning)
             } else if displayedNearbyStops.isEmpty && displayedFavouriteStops.isEmpty {
                 Label(
                     emptyStateMessage,
@@ -156,7 +158,7 @@ struct BusCard: View {
                     }
                     Label("Favourites", systemImage: "star.fill")
                         .font(.caption.bold())
-                        .foregroundStyle(palette.accentStrong)
+                        .foregroundStyle(palette.accentText)
                     ForEach(displayedFavouriteStops) { stop in
                         BusStopSection(
                             stop: stop,
@@ -314,9 +316,9 @@ struct BusAlertRow: View {
 
     private var alertColor: Color {
         switch alert.severity {
-        case .severe:  return AppTheme.danger
-        case .warning: return AppTheme.warning
-        case .info:    return AppTheme.info
+        case .severe:  return palette.danger
+        case .warning: return palette.warning
+        case .info:    return palette.info
         }
     }
 }
@@ -346,7 +348,7 @@ struct BusStopSection: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(stop.stopName)
-                            .font(.transit(17, weight: .bold))
+                            .font(.transitHeadline)
                             .foregroundStyle(palette.textPrimary)
                         if let code = stop.stopCode {
                             Text("Stop #\(code)")
@@ -356,7 +358,7 @@ struct BusStopSection: View {
                     }
                     Spacer()
                     Text("\(stop.distanceMeters)m away")
-                        .font(.transit(12, weight: .bold))
+                        .font(.transitBadge)
                         .foregroundStyle(isSelected ? palette.buttonForeground : palette.textSecondary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -436,7 +438,7 @@ struct BusDepartureRow: View {
 
             // Route badge
             Text(departure.routeShortName)
-                .font(.transit(13, weight: .heavy).monospacedDigit())
+                .font(.transitLabel.monospacedDigit())
                 .foregroundStyle(palette.buttonForeground)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
@@ -450,7 +452,7 @@ struct BusDepartureRow: View {
             // Headsign / route name
             VStack(alignment: .leading, spacing: 2) {
                 Text(departure.headsign ?? departure.routeLongName)
-                    .font(.transit(14, weight: .bold))
+                    .font(.transitBody)
                     .foregroundStyle(palette.textPrimary)
                     .lineLimit(1)
                 timeDetailLine
@@ -464,17 +466,17 @@ struct BusDepartureRow: View {
                 HStack(alignment: .lastTextBaseline, spacing: 3) {
                     let duration = departure.minutesAway.durationComponents
                     Text(duration.value)
-                        .font(.transit(22, weight: .heavy).monospacedDigit())
+                        .font(.transitDisplay.monospacedDigit())
                         .foregroundStyle(palette.textPrimary)
                     if !duration.unit.isEmpty {
                         Text(duration.unit)
-                            .font(.transit(11, weight: .bold))
+                            .font(.transitBadge)
                             .foregroundStyle(palette.textSecondary)
                     }
                 }
 
                 Text(departure.status.rawValue)
-                    .font(.transit(10, weight: .bold))
+                    .font(.transitBadge)
                     .foregroundStyle(statusColor)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
@@ -516,13 +518,7 @@ struct BusDepartureRow: View {
     }
 
     private var statusColor: Color {
-        switch departure.status {
-        case .onTime:  return AppTheme.success
-        case .early:   return AppTheme.info
-        case .late:    return AppTheme.warning
-        case .noData:  return palette.textSecondary
-        case .skipped: return AppTheme.danger
-        }
+        palette.color(for: departure.status)
     }
 }
 
@@ -595,7 +591,7 @@ private struct BusTripDetailSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 Text(tripDetail.routeShortName)
-                    .font(.transit(22, weight: .heavy).monospacedDigit())
+                    .font(.transitTitle.monospacedDigit())
                     .foregroundStyle(Color.black.opacity(0.84))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -604,7 +600,7 @@ private struct BusTripDetailSheet: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(tripDetail.headsign ?? tripDetail.routeLongName)
-                        .font(.transit(18, weight: .bold))
+                        .font(.transitHeadline)
                         .foregroundStyle(palette.textPrimary)
                     Text(tripDetail.routeLongName)
                         .font(.subheadline)
@@ -644,7 +640,7 @@ private struct BusTripDetailSheet: View {
                     .foregroundStyle(palette.textSecondary)
                 HStack(spacing: 8) {
                     Text(tripDetail.terminalStopName)
-                        .font(.transit(16, weight: .bold))
+                        .font(.transitHeadline)
                         .foregroundStyle(palette.textPrimary)
                     if let terminalTime = tripDetail.terminalScheduledTime {
                         Text(terminalTime)
@@ -657,7 +653,7 @@ private struct BusTripDetailSheet: View {
                     if let terminalPredictedTime = tripDetail.terminalPredictedTime {
                         Text("Pred \(terminalPredictedTime)")
                             .font(.caption.bold())
-                            .foregroundStyle(AppTheme.info)
+                            .foregroundStyle(palette.info)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(palette.surfaceRaised, in: Capsule())
@@ -680,7 +676,7 @@ private struct BusTripDetailSheet: View {
             } label: {
                 HStack {
                     Text(showPriorStops ? "Stops Before Here" : "\(tripDetail.stopsBeforeSelected.count) stops before here")
-                        .font(.transit(18, weight: .bold))
+                        .font(.transitHeadline)
                         .foregroundStyle(palette.textPrimary)
                     Spacer()
                     Image(systemName: showPriorStops ? "chevron.up" : "chevron.down")
@@ -692,7 +688,7 @@ private struct BusTripDetailSheet: View {
 
             if showPriorStops {
                 ForEach(Array(tripDetail.stopsBeforeSelected.enumerated()), id: \.element.id) { index, stop in
-                    VictorianTripStopRow(
+                    TripStopRow(
                         stop: stop,
                         isLast: index == tripDetail.stopsBeforeSelected.count - 1
                     )
@@ -709,11 +705,11 @@ private struct BusTripDetailSheet: View {
     private func stopsCard(_ tripDetail: BusTripDetail) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Stops From Here")
-                .font(.transit(18, weight: .bold))
+                .font(.transitHeadline)
                 .foregroundStyle(palette.textPrimary)
 
             ForEach(Array(tripDetail.stopsFromSelected.enumerated()), id: \.element.id) { index, stop in
-                VictorianTripStopRow(
+                TripStopRow(
                     stop: stop,
                     isLast: index == tripDetail.stopsFromSelected.count - 1
                 )
@@ -731,7 +727,7 @@ private struct BusTripDetailSheet: View {
                 .font(.caption.bold())
                 .foregroundStyle(palette.textSecondary)
             Text(value)
-                .font(.transit(15, weight: .bold))
+                .font(.transitBody)
                 .foregroundStyle(palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Text(secondary)
@@ -772,6 +768,8 @@ private struct BusTripDetailSheet: View {
             return PTVBoardService.victorianBus
         case .victorianTrainPTV:
             return PTVBoardService.victorianTrain
+        case .victorianTramPTV:
+            return PTVBoardService.victorianTram
         }
     }
 }
@@ -816,118 +814,5 @@ private struct BusStopMiniMap: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Map showing \(stop.stopName)")
-    }
-}
-
-private struct VictorianTripStopRow: View {
-    let stop: BusTripStopDetail
-    let isLast: Bool
-
-    @Environment(\.themePalette) private var palette
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(spacing: 0) {
-                Circle()
-                    .fill(markerColor)
-                    .frame(width: stop.isSelectedStop ? 12 : 9, height: stop.isSelectedStop ? 12 : 9)
-                    .padding(.top, 4)
-
-                if !isLast {
-                    Rectangle()
-                        .fill(palette.textTertiary.opacity(0.35))
-                        .frame(width: 2, height: 28)
-                        .padding(.top, 4)
-                }
-            }
-            .frame(width: 14)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(stop.stopName)
-                        .font(.transit(15, weight: .bold))
-                        .foregroundStyle(palette.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if stop.isSelectedStop {
-                        Text("Selected")
-                            .font(.caption2.bold())
-                            .foregroundStyle(palette.buttonForeground)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
-                            .background(palette.buttonBackground, in: Capsule())
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    if let stopCode = stop.stopCode, !stopCode.isEmpty {
-                        Text("Stop #\(stopCode)")
-                            .font(.caption)
-                            .foregroundStyle(palette.textSecondary)
-                    }
-
-                    if let scheduledTime = stop.scheduledTime {
-                        Text(scheduledTime)
-                            .font(.caption.bold())
-                            .foregroundStyle(stop.isSelectedStop ? palette.accent : palette.textSecondary)
-                    }
-
-                    if let predictedTime = stop.predictedTime {
-                        Text("Pred \(predictedTime)")
-                            .font(.caption.bold())
-                            .foregroundStyle(statusColor)
-                    }
-
-                    if let status = stop.status {
-                        Text(status.rawValue)
-                            .font(.caption2.bold())
-                            .foregroundStyle(statusColor)
-                    }
-
-                    if let delaySeconds = stop.delaySeconds,
-                       let status = stop.status,
-                       status != .noData,
-                       status != .skipped,
-                       delaySeconds != 0 {
-                        let delayText = delaySeconds > 0 ? "+\(delaySeconds)s" : "\(delaySeconds)s"
-                        Text(delayText)
-                            .font(.caption2)
-                            .foregroundStyle(statusColor)
-                    }
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var markerColor: Color {
-        if stop.isSelectedStop {
-            return palette.accent
-        }
-        if let status = stop.status {
-            return color(for: status)
-        }
-        return palette.textTertiary.opacity(0.75)
-    }
-
-    private var statusColor: Color {
-        guard let status = stop.status else { return palette.textSecondary }
-        return color(for: status)
-    }
-
-    private func color(for status: BusDepartureStatus) -> Color {
-        switch status {
-        case .onTime:
-            return AppTheme.success
-        case .early:
-            return AppTheme.info
-        case .late:
-            return AppTheme.warning
-        case .noData:
-            return palette.textSecondary
-        case .skipped:
-            return AppTheme.danger
-        }
     }
 }

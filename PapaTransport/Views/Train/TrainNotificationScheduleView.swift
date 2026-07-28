@@ -73,7 +73,7 @@ struct TrainNotificationScheduleView: View {
                                 .font(.title3)
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(palette.accent)
+                        .foregroundStyle(palette.accentText)
                     }
                     .swipeActions {
                         Button(role: .destructive) {

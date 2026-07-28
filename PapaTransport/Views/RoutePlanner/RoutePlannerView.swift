@@ -71,12 +71,12 @@ struct RoutePlannerView: View {
 
                 if let originCoordinate {
                     Marker("From", systemImage: "smallcircle.filled.circle", coordinate: originCoordinate)
-                        .tint(AppTheme.success)
+                        .tint(palette.success)
                 }
 
                 if let destinationCoordinate {
                     Marker("To", systemImage: "flag.fill", coordinate: destinationCoordinate)
-                        .tint(AppTheme.danger)
+                        .tint(palette.danger)
                 }
             }
             .mapStyle(.standard(elevation: .realistic))
@@ -104,7 +104,7 @@ struct RoutePlannerView: View {
                 .frame(maxWidth: 190)
 
                 Text(instructionText)
-                    .font(.transit(12, weight: .medium))
+                    .font(.transitCaption)
                     .foregroundStyle(palette.textSecondary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
@@ -152,8 +152,8 @@ struct RoutePlannerView: View {
     private func resultSheet(safeBottom: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Plan Trip", systemImage: "map.fill")
-                .font(.transit(16, weight: .bold))
-                .foregroundStyle(palette.accent)
+                .font(.transitHeadline)
+                .foregroundStyle(palette.accentText)
 
             statusContent
 
@@ -168,18 +168,18 @@ struct RoutePlannerView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "arrow.up.forward.app.fill")
                         Text("Open in Apple Maps")
-                            .font(.transit(14, weight: .bold))
+                            .font(.transitBody)
                         Spacer()
                     }
                     .padding(.vertical, 12)
                     .padding(.horizontal, 14)
                     .background(palette.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .foregroundStyle(palette.accent)
+                    .foregroundStyle(palette.accentText)
                 }
                 .buttonStyle(.plain)
 
                 Text("Apple Maps has the step-by-step route, including which services to catch.")
-                    .font(.transit(11, weight: .medium))
+                    .font(.transitCaption)
                     .foregroundStyle(palette.textTertiary)
             }
         }
@@ -200,20 +200,20 @@ struct RoutePlannerView: View {
             HStack(spacing: 8) {
                 ProgressView()
                 Text("Estimating…")
-                    .font(.transit(13, weight: .medium))
+                    .font(.transitCaption)
                     .foregroundStyle(palette.textSecondary)
             }
         } else if let errorMessage {
             Text(errorMessage)
-                .font(.transit(13, weight: .medium))
-                .foregroundStyle(AppTheme.warning)
+                .font(.transitCaption)
+                .foregroundStyle(palette.warning)
         } else if originCoordinate == nil || destinationCoordinate == nil {
             Text("Choose a start and destination to see how long the trip takes.")
-                .font(.transit(13, weight: .medium))
+                .font(.transitCaption)
                 .foregroundStyle(palette.textSecondary)
         } else if result?.legs.isEmpty ?? false {
             Text("No estimate available for these points.")
-                .font(.transit(13, weight: .medium))
+                .font(.transitCaption)
                 .foregroundStyle(palette.textSecondary)
         }
     }
@@ -226,23 +226,23 @@ struct RoutePlannerView: View {
             HStack(spacing: 12) {
                 Image(systemName: leg.mode.symbolName)
                     .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(leg.mode == selectedMode ? palette.accent : palette.textSecondary)
+                    .foregroundStyle(leg.mode == selectedMode ? palette.accentText : palette.textSecondary)
                     .frame(width: 26)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(leg.mode.title)
-                        .font(.transit(14, weight: .bold))
+                        .font(.transitBody)
                         .foregroundStyle(palette.textPrimary)
                     Text(distanceText(leg.distanceMeters))
-                        .font(.transit(11, weight: .medium))
+                        .font(.transitCaption)
                         .foregroundStyle(palette.textTertiary)
                 }
 
                 Spacer()
 
                 Text(durationText(leg.travelTime))
-                    .font(.transit(15, weight: .bold))
-                    .foregroundStyle(leg.mode == selectedMode ? palette.accent : palette.textPrimary)
+                    .font(.transitBody)
+                    .foregroundStyle(leg.mode == selectedMode ? palette.accentText : palette.textPrimary)
             }
             .padding(.vertical, 10)
             .padding(.horizontal, 12)
