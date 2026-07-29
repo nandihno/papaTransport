@@ -19,25 +19,37 @@ import CoreLocation
 
 final class PTVBoardService: TrainBoardProviding {
 
-    /// Station boards show only the next 2 hours.
+    /// Station boards show only the next 2 hours. The board groups by line and
+    /// collapses each group, so a whole station's worth of departures costs a
+    /// row per line rather than a row per train — hence the generous caps.
     static let victorianTrain = PTVBoardService(
         routeType: .train,
         provider: .victorianTrainPTV,
         nearbyRadiusMeters: 5_000,
         fallbackRadiusMeters: 5_000,
         maxStops: 8,
-        departureWindowSeconds: 2 * 60 * 60
+        departureWindowSeconds: 2 * 60 * 60,
+        departuresPerRequest: 10,
+        departuresPerLine: 10,
+        maxDeparturesPerStop: 120
     )
 
     /// Bus stops apply no time window — just the next departures — otherwise a
     /// late-night board would hide tomorrow's first service.
+    ///
+    /// The bus board lists departures flat rather than grouped, so the caps are
+    /// tighter than the train's: enough that every route serving the stop is
+    /// represented, not so many that the list becomes a wall of times.
     static let victorianBus = PTVBoardService(
         routeType: .bus,
         provider: .victorianPTV,
         nearbyRadiusMeters: 300,
         fallbackRadiusMeters: 800,
         maxStops: 10,
-        departureWindowSeconds: nil
+        departureWindowSeconds: nil,
+        departuresPerRequest: 6,
+        departuresPerLine: 3,
+        maxDeparturesPerStop: 15
     )
 
     /// Tram stops sit closer together than bus stops, so a tighter default
@@ -48,7 +60,10 @@ final class PTVBoardService: TrainBoardProviding {
         nearbyRadiusMeters: 250,
         fallbackRadiusMeters: 600,
         maxStops: 10,
-        departureWindowSeconds: nil
+        departureWindowSeconds: nil,
+        departuresPerRequest: 6,
+        departuresPerLine: 3,
+        maxDeparturesPerStop: 15
     )
 
     static let departureWindowSeconds = 2 * 60 * 60
@@ -65,7 +80,13 @@ final class PTVBoardService: TrainBoardProviding {
     private let maxStops: Int
     private let departureWindow: Int?
     private let melbourneTimeZone = TimeZone(identifier: "Australia/Melbourne")!
-    private let departuresPerStop = 6
+
+    /// PTV applies `max_results` **per route and direction**, not per stop, so
+    /// a request for 10 comes back with 10 for every line serving the station —
+    /// 240 at Flinders Street. Measured, not documented.
+    private let departuresPerRequest: Int
+    private let departuresPerLine: Int
+    private let maxDeparturesPerStop: Int
 
     private init(
         routeType: PTVRouteType,
@@ -73,7 +94,10 @@ final class PTVBoardService: TrainBoardProviding {
         nearbyRadiusMeters: Int,
         fallbackRadiusMeters: Int,
         maxStops: Int,
-        departureWindowSeconds: Int?
+        departureWindowSeconds: Int?,
+        departuresPerRequest: Int,
+        departuresPerLine: Int,
+        maxDeparturesPerStop: Int
     ) {
         self.routeType = routeType
         self.provider = provider
@@ -81,6 +105,9 @@ final class PTVBoardService: TrainBoardProviding {
         self.fallbackRadiusMeters = fallbackRadiusMeters
         self.maxStops = maxStops
         self.departureWindow = departureWindowSeconds
+        self.departuresPerRequest = departuresPerRequest
+        self.departuresPerLine = departuresPerLine
+        self.maxDeparturesPerStop = maxDeparturesPerStop
     }
 
     enum BoardError: LocalizedError {
@@ -408,7 +435,7 @@ final class PTVBoardService: TrainBoardProviding {
                 PTVEndpoint.departures(
                     routeType: routeType,
                     stopId: stopId,
-                    maxResults: departuresPerStop
+                    maxResults: departuresPerRequest
                 ),
                 as: PTVDeparturesResponse.self
             )
@@ -421,19 +448,63 @@ final class PTVBoardService: TrainBoardProviding {
 
     // MARK: - Mapping
 
+    private struct UpcomingDeparture {
+        let entry: PTVDeparture
+        let when: Date
+
+        /// Boards are grouped and read per line and per direction, so this is
+        /// the unit that has to stay represented.
+        var lineKey: String { "\(entry.routeId)|\(entry.directionId)" }
+    }
+
+    /// PTV merges every route and direction serving a stop into one list. Simply
+    /// keeping the earliest N therefore starves the quieter lines: at Flinders
+    /// Street the next six departures cover five of the twelve lines, and
+    /// Belgrave can vanish from Richmond entirely.
+    ///
+    /// Take turns across the line groups instead — one departure from each, then
+    /// a second from each — so the overall cap is spent on breadth first, then
+    /// restore time order for display.
+    private func selectDepartures(from upcoming: [UpcomingDeparture]) -> [UpcomingDeparture] {
+        var groups: [[UpcomingDeparture]] = []
+        var indexForLine: [String: Int] = [:]
+
+        for departure in upcoming {
+            if let index = indexForLine[departure.lineKey] {
+                groups[index].append(departure)
+            } else {
+                indexForLine[departure.lineKey] = groups.count
+                groups.append([departure])
+            }
+        }
+
+        var selected: [UpcomingDeparture] = []
+        rounds: for round in 0..<departuresPerLine {
+            for group in groups where group.count > round {
+                selected.append(group[round])
+                if selected.count >= maxDeparturesPerStop { break rounds }
+            }
+        }
+
+        return selected.sorted { $0.when < $1.when }
+    }
+
     private func busDepartures(from response: PTVDeparturesResponse) -> [BusDeparture] {
         let now = Date()
         let cutoff = departureWindow.map { now.addingTimeInterval(TimeInterval($0)) }
 
-        return response.departures
-            .compactMap { entry -> (PTVDeparture, Date)? in
+        let upcoming = response.departures
+            .compactMap { entry -> UpcomingDeparture? in
                 guard let when = entry.effectiveDeparture, when >= now else { return nil }
                 if let cutoff, when > cutoff { return nil }
-                return (entry, when)
+                return UpcomingDeparture(entry: entry, when: when)
             }
-            .sorted { $0.1 < $1.1 }
-            .prefix(departuresPerStop)
-            .map { entry, when in
+            .sorted { $0.when < $1.when }
+
+        return selectDepartures(from: upcoming)
+            .map { departure in
+                let entry = departure.entry
+                let when = departure.when
                 let route = response.routes[String(entry.routeId)]
                 let run = response.runs[String(entry.runRef)]
                 let direction = response.directions[String(entry.directionId)]
