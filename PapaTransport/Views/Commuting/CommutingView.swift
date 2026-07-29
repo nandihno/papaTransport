@@ -221,11 +221,18 @@ struct CommutingView: View {
         // so they match the rounded design baked into the transit* roles.
         .fontDesign(.rounded)
         .task { await performFetch() }
+        .task(id: transportRegion) { await refreshQueenslandTimetableIfNeeded() }
     }
 
     // MARK: - Map Tab
 
     private var mapTab: some View {
+        GTFSProvisioningGate(region: transportRegion) {
+            busTabContent
+        }
+    }
+
+    private var busTabContent: some View {
         Group {
             if shouldShowBusCard {
                 BusMapExplorerView(
@@ -259,6 +266,12 @@ struct CommutingView: View {
     // MARK: - Trains Tab
 
     private var trainsTab: some View {
+        GTFSProvisioningGate(region: transportRegion) {
+            trainsTabContent
+        }
+    }
+
+    private var trainsTabContent: some View {
         Group {
             if transportRegion == .victorian {
                 TrainMapExplorerView(
@@ -357,6 +370,18 @@ struct CommutingView: View {
                     .strokeBorder(palette.accentStrong.opacity(0.18), lineWidth: 1)
             }
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+
+    /// The Queensland timetable is a local database with a fixed validity
+    /// window; this tops it up in the background as it approaches expiry so it
+    /// never silently runs out. No-op for Victoria, which is served live by
+    /// the PTV API.
+    private func refreshQueenslandTimetableIfNeeded() async {
+        guard transportRegion == .queensland else { return }
+        let updated = await GTFSFeedRefreshService.shared.refreshIfNeeded()
+        if updated {
+            await performFetch()
         }
     }
 

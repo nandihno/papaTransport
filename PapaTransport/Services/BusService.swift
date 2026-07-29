@@ -13,7 +13,7 @@
 import Foundation
 import CoreLocation
 
-final class BusService: BusDataProviding {
+nonisolated final class BusService: BusDataProviding {
     static let shared = BusService()
 
     enum TripDetailError: LocalizedError {

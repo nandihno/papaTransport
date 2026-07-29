@@ -13,13 +13,59 @@ actor GTFSDatabase {
     /// on every map pan. Nil means not yet computed.
     private var railStopIdCache: Set<String>?
 
+    /// Cleared whenever the database is closed or reinstalled.
+    private var cachedValidity: GTFSFeedValidity?
+    private var routeShortNameCache: [String: String] = [:]
+
     private let bundledDatabaseFileName = "gtfs_seq"
     private let bundledDatabaseExtension = "sqlite3"
     private let bundledDatabaseSubdirectory = "db/transport/queensland"
 
+    /// Application Support rather than Caches.
+    ///
+    /// Caches is correct for data the system may discard and the app can
+    /// cheaply rebuild. Once the timetable is downloaded rather than bundled,
+    /// neither holds: a purge would leave a user with no schedule at all, and
+    /// recovering means a 28 MB download they may not be able to make. The
+    /// file is excluded from iCloud backup instead, since it is reproducible
+    /// from the network.
     private var dbPath: String {
+        databaseDirectory.appendingPathComponent("gtfs_seq.sqlite3").path
+    }
+
+    private var databaseDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("Timetables", isDirectory: true)
+    }
+
+    private var legacyCachesPath: String {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
         return caches.appendingPathComponent("gtfs_seq.sqlite3").path
+    }
+
+    private func prepareDatabaseDirectory() throws {
+        var directory = databaseDirectory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? directory.setResourceValues(values)
+    }
+
+    /// Moves a database installed by an earlier build out of Caches, so
+    /// upgrading users are not made to re-download 28 MB.
+    private func migrateLegacyCachesDatabaseIfNeeded() {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: legacyCachesPath),
+              !fileManager.fileExists(atPath: dbPath)
+        else { return }
+
+        do {
+            try prepareDatabaseDirectory()
+            try fileManager.moveItem(atPath: legacyCachesPath, toPath: dbPath)
+        } catch {
+            try? fileManager.removeItem(atPath: legacyCachesPath)
+        }
     }
 
     func hasBundledDatabaseAsset() -> Bool {
@@ -28,6 +74,7 @@ actor GTFSDatabase {
 
     func isDatabaseReady() -> Bool {
         if isImported && db != nil { return true }
+        migrateLegacyCachesDatabaseIfNeeded()
         do {
             return try validateInstalledDatabase()
         } catch {
@@ -37,8 +84,55 @@ actor GTFSDatabase {
 
     func ensureReady() async throws {
         if isImported && db != nil { return }
+        migrateLegacyCachesDatabaseIfNeeded()
         if try validateInstalledDatabase() { return }
         try await installBundledDatabase()
+    }
+
+    // MARK: - Feed validity
+
+    /// The window the installed timetable actually covers, read from `calendar`.
+    ///
+    /// This matters because an expired feed is not a broken database: every
+    /// table is fully populated and every query succeeds, but
+    /// `todayActiveServiceIds()` matches nothing, so boards render empty with
+    /// no error. Callers use this to tell the difference.
+    func feedValidity() -> GTFSFeedValidity? {
+        if let cachedValidity { return cachedValidity }
+        guard db != nil else { return nil }
+
+        guard let start = queryText("SELECT MIN(start_date) FROM calendar"),
+              let end = queryText("SELECT MAX(end_date) FROM calendar"),
+              start.count == 8, end.count == 8
+        else { return nil }
+
+        let validity = GTFSFeedValidity(startDate: start, endDate: end)
+        cachedValidity = validity
+        return validity
+    }
+
+    private func queryText(_ sql: String) -> String? {
+        guard let db else { return nil }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return optionalTextColumn(stmt, index: 0)
+    }
+
+    /// Where the live database file sits, for the refresh service to import
+    /// over. Creates the containing directory, which will not exist yet on a
+    /// first run that has no bundled database to copy.
+    func databasePathForImport() throws -> String {
+        try prepareDatabaseDirectory()
+        return dbPath
+    }
+
+    /// Reopens after `GTFSFeedImporter` has swapped the file underneath us.
+    /// Every cache is dropped: they describe the previous timetable.
+    func reopenAfterExternalReplacement() {
+        closeDB()
+        _ = try? validateInstalledDatabase()
     }
 
     func refreshDatabase() async throws {
@@ -440,6 +534,45 @@ actor GTFSDatabase {
 
         return bestByStation.values.sorted {
             $0.stopName.localizedCaseInsensitiveCompare($1.stopName) == .orderedAscending
+        }
+    }
+
+    /// Short names for the given route ids, for labelling live vehicles.
+    /// Cached because the realtime feed refreshes far more often than `routes`
+    /// changes, and the map re-labels on every tick.
+    func routeShortNames(for routeIds: [String]) throws -> [String: String] {
+        guard let db else { throw GTFSDBError.notReady }
+        guard !routeIds.isEmpty else { return [:] }
+
+        let unknown = routeIds.filter { routeShortNameCache[$0] == nil }
+        if !unknown.isEmpty {
+            let placeholders = Array(repeating: "?", count: unknown.count).joined(separator: ",")
+            let sql = """
+                SELECT route_id, route_short_name, route_long_name
+                FROM routes
+                WHERE route_id IN (\(placeholders))
+            """
+
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            for (offset, routeId) in unknown.enumerated() {
+                sqlite3_bind_text(stmt, Int32(offset + 1), (routeId as NSString).utf8String, -1, nil)
+            }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let routeId = textColumn(stmt, index: 0)
+                let short = textColumn(stmt, index: 1).trimmingCharacters(in: .whitespacesAndNewlines)
+                let long = textColumn(stmt, index: 2).trimmingCharacters(in: .whitespacesAndNewlines)
+                routeShortNameCache[routeId] = short.isEmpty ? long : short
+            }
+        }
+
+        return routeIds.reduce(into: [:]) { result, routeId in
+            if let name = routeShortNameCache[routeId] { result[routeId] = name }
         }
     }
 
@@ -921,10 +1054,7 @@ actor GTFSDatabase {
         try removeCachedDatabaseArtifacts()
 
         let destinationURL = URL(fileURLWithPath: dbPath)
-        try FileManager.default.createDirectory(
-            at: destinationURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        try prepareDatabaseDirectory()
         try FileManager.default.copyItem(at: bundledURL, to: destinationURL)
 
         guard try validateInstalledDatabase() else {
@@ -1036,6 +1166,9 @@ actor GTFSDatabase {
         }
         db = nil
         isImported = false
+        cachedValidity = nil
+        railStopIdCache = nil
+        routeShortNameCache = [:]
     }
 
     private func exec(_ sql: String) {

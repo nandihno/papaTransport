@@ -1,7 +1,7 @@
 import CoreLocation
 import Foundation
 
-final class QLDTrainMapService: BusDataProviding {
+nonisolated final class QLDTrainMapService: BusDataProviding {
     static let shared = QLDTrainMapService()
     static let departureWindowSeconds = 2 * 60 * 60
     static let departureWindowDescription = "next 2 hours"
@@ -617,7 +617,7 @@ final class QLDTrainMapService: BusDataProviding {
     }
 }
 
-private struct TripPatternRealtimeDetail {
+nonisolated private struct TripPatternRealtimeDetail {
     var predictedTime: String? = nil
     var delaySeconds: Int? = nil
     var status: BusDepartureStatus? = nil

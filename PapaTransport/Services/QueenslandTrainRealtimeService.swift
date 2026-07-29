@@ -1,6 +1,6 @@
 import Foundation
 
-final class QueenslandTrainRealtimeService {
+nonisolated final class QueenslandTrainRealtimeService {
     static let shared = QueenslandTrainRealtimeService()
 
     private init() {}

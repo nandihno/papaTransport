@@ -11,7 +11,7 @@ import Foundation
 
 // MARK: - FeedMessage (root)
 
-struct GTFSRTFeedMessage {
+nonisolated struct GTFSRTFeedMessage {
     let timestamp: UInt64                  // header.timestamp (POSIX seconds)
     let entities: [GTFSRTFeedEntity]
 
@@ -38,9 +38,10 @@ struct GTFSRTFeedMessage {
 
 // MARK: - FeedEntity
 
-struct GTFSRTFeedEntity {
+nonisolated struct GTFSRTFeedEntity {
     let id: String
     let tripUpdate: GTFSRTTripUpdate?
+    let vehicle: GTFSRTVehiclePosition?
     let alert: GTFSRTAlert?
 
     init(data: Data) throws {
@@ -56,6 +57,13 @@ struct GTFSRTFeedEntity {
             self.tripUpdate = nil
         }
 
+        // vehicle = field 4
+        if let vData = fields.first(4)?.asData {
+            self.vehicle = try GTFSRTVehiclePosition(data: vData)
+        } else {
+            self.vehicle = nil
+        }
+
         // alert = field 5
         if let aData = fields.first(5)?.asData {
             self.alert = try GTFSRTAlert(data: aData)
@@ -65,9 +73,91 @@ struct GTFSRTFeedEntity {
     }
 }
 
+// MARK: - VehiclePosition
+
+nonisolated struct GTFSRTVehiclePosition {
+    let tripId: String
+    let routeId: String
+    let directionId: UInt32
+    let vehicleId: String
+    let vehicleLabel: String
+    let latitude: Double
+    let longitude: Double
+    /// Degrees clockwise from true north, when the operator supplies it.
+    let bearing: Double?
+    /// Metres per second.
+    let speed: Double?
+    let stopId: String
+    let currentStatus: GTFSRTVehicleStopStatus
+    let timestamp: UInt64
+
+    init(data: Data) throws {
+        var reader = ProtobufReader(data: data)
+        let fields = try reader.readAllFields()
+
+        // trip = field 1 (TripDescriptor)
+        if let tripData = fields.first(1)?.asData {
+            var tReader = ProtobufReader(data: tripData)
+            let tFields = try tReader.readAllFields()
+            self.tripId = tFields.first(1)?.asString ?? ""
+            self.routeId = tFields.first(5)?.asString ?? ""
+            self.directionId = UInt32(tFields.first(6)?.asUInt64 ?? 0)
+        } else {
+            self.tripId = ""
+            self.routeId = ""
+            self.directionId = 0
+        }
+
+        // vehicle = field 8 (VehicleDescriptor)
+        if let vData = fields.first(8)?.asData {
+            var vReader = ProtobufReader(data: vData)
+            let vFields = try vReader.readAllFields()
+            self.vehicleId = vFields.first(1)?.asString ?? ""
+            self.vehicleLabel = vFields.first(2)?.asString ?? ""
+        } else {
+            self.vehicleId = ""
+            self.vehicleLabel = ""
+        }
+
+        // position = field 2 (Position; lat/lon/bearing/speed are floats)
+        if let pData = fields.first(2)?.asData {
+            var pReader = ProtobufReader(data: pData)
+            let pFields = try pReader.readAllFields()
+            self.latitude = Double(pFields.first(1)?.asFloat ?? 0)
+            self.longitude = Double(pFields.first(2)?.asFloat ?? 0)
+            self.bearing = pFields.first(3)?.asFloat.map(Double.init)
+            self.speed = pFields.first(5)?.asFloat.map(Double.init)
+        } else {
+            self.latitude = 0
+            self.longitude = 0
+            self.bearing = nil
+            self.speed = nil
+        }
+
+        self.stopId = fields.first(7)?.asString ?? ""
+        self.currentStatus = GTFSRTVehicleStopStatus(
+            rawValue: Int(fields.first(4)?.asUInt64 ?? 2)) ?? .inTransitTo
+        self.timestamp = fields.first(5)?.asUInt64 ?? 0
+    }
+
+    /// Entities without a usable fix are common in the feed; skip them rather
+    /// than dropping a pin on Null Island.
+    var hasValidPosition: Bool {
+        latitude != 0 && longitude != 0
+            && latitude >= -90 && latitude <= 90
+            && longitude >= -180 && longitude <= 180
+    }
+}
+
+nonisolated enum GTFSRTVehicleStopStatus: Int {
+    case incomingAt = 0
+    case stoppedAt = 1
+    case inTransitTo = 2
+}
+
 // MARK: - TripUpdate
 
-struct GTFSRTTripUpdate {
+nonisolated struct GTFSRTTripUpdate {
     let tripId: String
     let routeId: String
     let directionId: UInt32
@@ -111,7 +201,7 @@ struct GTFSRTTripUpdate {
 
 // MARK: - StopTimeUpdate
 
-struct GTFSRTStopTimeUpdate {
+nonisolated struct GTFSRTStopTimeUpdate {
     let stopSequence: UInt32
     let stopId: String
     let arrival: GTFSRTStopTimeEvent?
@@ -146,7 +236,7 @@ struct GTFSRTStopTimeUpdate {
 
 // MARK: - StopTimeEvent
 
-struct GTFSRTStopTimeEvent {
+nonisolated struct GTFSRTStopTimeEvent {
     let delay: Int32       // seconds late (+) or early (-)
     let time: Int64        // absolute POSIX timestamp
     let uncertainty: Int32
@@ -163,7 +253,7 @@ struct GTFSRTStopTimeEvent {
 
 // MARK: - Alert
 
-struct GTFSRTAlert {
+nonisolated struct GTFSRTAlert {
     let activePeriods: [GTFSRTTimeRange]
     let informedEntities: [GTFSRTEntitySelector]
     let cause: GTFSRTAlertCause
@@ -215,7 +305,7 @@ struct GTFSRTAlert {
 
 // MARK: - TimeRange
 
-struct GTFSRTTimeRange {
+nonisolated struct GTFSRTTimeRange {
     let start: UInt64   // 0 = from now
     let end: UInt64     // 0 = indefinite
 
@@ -229,7 +319,7 @@ struct GTFSRTTimeRange {
 
 // MARK: - EntitySelector
 
-struct GTFSRTEntitySelector {
+nonisolated struct GTFSRTEntitySelector {
     let agencyId: String?
     let routeId: String?
     let routeType: Int32?
@@ -247,7 +337,7 @@ struct GTFSRTEntitySelector {
 
 // MARK: - Enums
 
-enum GTFSRTScheduleRelationship: Int {
+nonisolated enum GTFSRTScheduleRelationship: Int {
     case scheduled   = 0
     case added       = 1
     case unscheduled = 2
@@ -255,14 +345,14 @@ enum GTFSRTScheduleRelationship: Int {
     case replacement = 5
 }
 
-enum GTFSRTStopScheduleRelationship: Int {
+nonisolated enum GTFSRTStopScheduleRelationship: Int {
     case scheduled   = 0
     case skipped     = 1
     case noData      = 2
     case unscheduled = 3
 }
 
-enum GTFSRTAlertCause: Int {
+nonisolated enum GTFSRTAlertCause: Int {
     case unknownCause     = 1
     case otherCause       = 2
     case technicalProblem = 3
@@ -277,7 +367,7 @@ enum GTFSRTAlertCause: Int {
     case medicalEmergency = 12
 }
 
-enum GTFSRTAlertEffect: Int {
+nonisolated enum GTFSRTAlertEffect: Int {
     case noService          = 1
     case reducedService     = 2
     case significantDelays  = 3
@@ -291,7 +381,7 @@ enum GTFSRTAlertEffect: Int {
     case accessibilityIssue = 11
 }
 
-enum GTFSRTSeverityLevel: Int {
+nonisolated enum GTFSRTSeverityLevel: Int {
     case unknownSeverity = 0
     case info            = 1
     case warning         = 2

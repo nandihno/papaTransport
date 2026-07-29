@@ -24,9 +24,14 @@ struct CommutingSettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @Environment(\.themePalette) private var palette
     @ObservedObject private var progress = GTFSDownloadProgress.shared
 
     @State private var busDataReady = false
+    @State private var feedValidity: GTFSFeedValidity?
+    @State private var hasBundledDatabase = false
+    @State private var timetableUpdateInProgress = false
+    @State private var timetableUpdateMessage = ""
     @State private var busSetupMessage = ""
     @State private var busSetupInProgress = false
     @State private var showResetConfirmation = false
@@ -584,21 +589,71 @@ struct CommutingSettingsView: View {
 
     private var busManagementSection: some View {
         Section {
-            Button(role: .destructive) {
-                showResetConfirmation = true
-            } label: {
-                Label("Reinstall Bundled Bus Data", systemImage: "arrow.triangle.2.circlepath")
-            }
-            .confirmationDialog(
-                "Reinstall bundled bus data?",
-                isPresented: $showResetConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button("Reinstall", role: .destructive) {
-                    Task { await reinstallBusData() }
+            if let validity = feedValidity {
+                LabeledContent("Timetable Covers") {
+                    Text("until \(validity.displayEndDate)")
+                        .foregroundStyle(feedValidityColor(validity))
                 }
-            } message: {
-                Text("This clears the installed cached bus database and reinstalls the bundled copy from the app package.")
+            }
+
+            Button {
+                Task { await checkForTimetableUpdate() }
+            } label: {
+                Label(
+                    timetableUpdateInProgress ? "Updating…" : "Check for Timetable Update",
+                    systemImage: "arrow.down.circle"
+                )
+            }
+            .disabled(timetableUpdateInProgress)
+
+            // Download plus import runs to tens of seconds. Without live
+            // progress the row just sits there and reads as a frozen app.
+            if timetableUpdateInProgress {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let fraction = progress.fraction {
+                        ProgressView(value: fraction)
+                            .tint(palette.accent)
+                    } else {
+                        ProgressView()
+                            .progressViewStyle(.linear)
+                            .tint(palette.accent)
+                    }
+
+                    Text(progress.detail.isEmpty
+                         ? (progress.stage.isEmpty ? "Contacting TransLink…" : progress.stage)
+                         : progress.detail)
+                        .font(.transitCaption)
+                        .foregroundStyle(palette.textSecondary)
+                }
+                .padding(.vertical, 2)
+            }
+
+            if !timetableUpdateMessage.isEmpty {
+                Text(timetableUpdateMessage)
+                    .font(.subheadline)
+                    .foregroundStyle(palette.textSecondary)
+            }
+
+            // Only offered when a database actually ships inside the app.
+            // Shipping it is optional — without it there is nothing to
+            // reinstall from, and re-downloading is the equivalent action.
+            if hasBundledDatabase {
+                Button(role: .destructive) {
+                    showResetConfirmation = true
+                } label: {
+                    Label("Reinstall Bundled Bus Data", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .confirmationDialog(
+                    "Reinstall bundled bus data?",
+                    isPresented: $showResetConfirmation,
+                    titleVisibility: .visible
+                ) {
+                    Button("Reinstall", role: .destructive) {
+                        Task { await reinstallBusData() }
+                    }
+                } message: {
+                    Text("This clears the installed bus database and reinstalls the copy bundled with the app.")
+                }
             }
 
             if !busSetupMessage.isEmpty {
@@ -649,6 +704,33 @@ struct CommutingSettingsView: View {
         }
     }
 
+    private func feedValidityColor(_ validity: GTFSFeedValidity) -> Color {
+        switch validity.status() {
+        case .current: palette.textSecondary
+        case .expiringSoon: palette.warning
+        case .expired, .notYetValid: palette.danger
+        }
+    }
+
+    @MainActor
+    private func checkForTimetableUpdate() async {
+        timetableUpdateInProgress = true
+        timetableUpdateMessage = ""
+
+        let updated = await GTFSFeedRefreshService.shared.refreshIfNeeded(force: true)
+        feedValidity = await GTFSDatabase.shared.feedValidity()
+        await GTFSFeedStatusStore.shared.refresh()
+
+        timetableUpdateMessage = if updated, let feedValidity {
+            "Updated — now covers services until \(feedValidity.displayEndDate)."
+        } else if let feedValidity, feedValidity.isUsable() {
+            "Already up to date. Covers services until \(feedValidity.displayEndDate)."
+        } else {
+            "Could not reach TransLink. The installed timetable is unchanged."
+        }
+        timetableUpdateInProgress = false
+    }
+
     @MainActor
     private func refreshBusState() async {
         guard transportRegion == .queensland || (transportRegion == .victorian && victorianShowBusCard) else {
@@ -659,6 +741,8 @@ struct CommutingSettingsView: View {
         }
 
         busDataReady = await GTFSDatabase.shared.isDatabaseReady()
+        feedValidity = await GTFSDatabase.shared.feedValidity()
+        hasBundledDatabase = await GTFSDatabase.shared.hasBundledDatabaseAsset()
     }
 
     @MainActor

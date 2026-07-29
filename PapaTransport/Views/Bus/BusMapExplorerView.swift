@@ -36,6 +36,8 @@ struct BusMapExplorerView: View {
     @State private var sheetDragTranslation: CGFloat = 0
     @State private var isDraggingSheet = false
     @State private var routeSearchText = ""
+    @State private var currentRegion: MKCoordinateRegion?
+    @State private var liveVehicles: [LiveVehicle] = []
 
     private static let autoRefreshInterval: Duration = .seconds(60)
 
@@ -194,11 +196,20 @@ struct BusMapExplorerView: View {
                 }
                 .tag(stop.id)
             }
+
+            // Untagged so they stay out of the stop-selection binding.
+            ForEach(liveVehicles) { vehicle in
+                Annotation("", coordinate: vehicle.coordinate) {
+                    LiveVehicleMapPin(vehicle: vehicle)
+                }
+                .annotationTitles(.hidden)
+            }
         }
         .mapStyle(.standard(elevation: .realistic))
         .onMapCameraChange(frequency: .onEnd) { context in
             let center = context.region.center
             mapCenter = center
+            currentRegion = context.region
 
             guard hasBootstrapped else { return }
             scheduleReload(around: center)
@@ -308,6 +319,8 @@ struct BusMapExplorerView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 14) {
+                    GTFSFeedWarningBanner(provider: provider)
+
                     if let statusMessage, !statusMessage.isEmpty {
                         mapInfoBanner(
                             title: statusMessage,
@@ -501,9 +514,36 @@ struct BusMapExplorerView: View {
             }
     }
 
+    /// Victoria is served live by the PTV API and has no local schedule, so
+    /// there is nothing to expire there.
+    private func refreshFeedStatusIfNeeded() async {
+        guard provider.region == .queensland else { return }
+        try? await GTFSDatabase.shared.ensureReady()
+        await GTFSFeedStatusStore.shared.refresh()
+    }
+
+    /// Live vehicles come from TransLink's GTFS-realtime VehiclePositions feed,
+    /// which only covers Queensland.
+    private func refreshLiveVehicles() async {
+        guard provider == .queenslandTransLink, let currentRegion else {
+            if !liveVehicles.isEmpty { liveVehicles = [] }
+            return
+        }
+
+        let vehicles = await QLDVehiclePositionService.shared.vehicles(
+            rail: false,
+            in: currentRegion
+        )
+        withAnimation(.easeInOut(duration: 0.3)) {
+            liveVehicles = vehicles
+        }
+    }
+
     private func bootstrap() async {
         guard !hasBootstrapped else { return }
         hasBootstrapped = true
+
+        await refreshFeedStatusIfNeeded()
 
         if let initialBusInfo {
             selectedStopID = initialBusInfo.nearbyStops.first?.id
@@ -514,13 +554,14 @@ struct BusMapExplorerView: View {
             let coordinate = location.coordinate
             userCoordinate = coordinate
             mapCenter = coordinate
-            cameraPosition = .region(
-                MKCoordinateRegion(
-                    center: coordinate,
-                    span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                )
+            let initialRegion = MKCoordinateRegion(
+                center: coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
             )
+            cameraPosition = .region(initialRegion)
+            currentRegion = initialRegion
             await reloadBoard(around: coordinate)
+            await refreshLiveVehicles()
         } catch {
             if error is LocationError {
                 let unavailable = BusInfo.noLocation(provider: provider)
@@ -558,6 +599,7 @@ struct BusMapExplorerView: View {
         if let coordinate = mapCenter ?? lastQueriedCenter ?? userCoordinate {
             await reloadBoard(around: coordinate)
         }
+        await refreshLiveVehicles()
     }
 
     private func scheduleReload(around coordinate: CLLocationCoordinate2D) {

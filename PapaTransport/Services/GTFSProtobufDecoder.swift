@@ -11,7 +11,7 @@ import Foundation
 
 // MARK: - Wire types
 
-enum ProtobufWireType: UInt8 {
+nonisolated enum ProtobufWireType: UInt8 {
     case varint          = 0
     case fixed64         = 1
     case lengthDelimited = 2
@@ -20,21 +20,21 @@ enum ProtobufWireType: UInt8 {
 
 // MARK: - Protobuf field (one tag+value pair)
 
-enum ProtobufValue {
+nonisolated enum ProtobufValue {
     case varint(UInt64)
     case fixed64(UInt64)
     case fixed32(UInt32)
     case bytes(Data)
 }
 
-struct ProtobufField {
+nonisolated struct ProtobufField {
     let fieldNumber: Int
     let value: ProtobufValue
 }
 
 // MARK: - Reader
 
-struct ProtobufReader {
+nonisolated struct ProtobufReader {
     private let data: Data
     private var offset: Int
 
@@ -120,7 +120,7 @@ struct ProtobufReader {
 
 // MARK: - Convenience extensions on ProtobufValue
 
-extension ProtobufValue {
+nonisolated extension ProtobufValue {
     var asUInt64: UInt64? {
         if case .varint(let v) = self { return v }
         return nil
@@ -151,6 +151,18 @@ extension ProtobufValue {
         return String(data: d, encoding: .utf8)
     }
 
+    /// GTFS-RT `Position` stores latitude, longitude, bearing and speed as
+    /// protobuf `float`, which is wire type 5 (fixed32) — not a varint.
+    var asFloat: Float? {
+        if case .fixed32(let v) = self { return Float(bitPattern: v) }
+        return nil
+    }
+
+    var asDouble: Double? {
+        if case .fixed64(let v) = self { return Double(bitPattern: v) }
+        return nil
+    }
+
     /// Parse the bytes as an embedded message, returning its fields.
     func asMessage() throws -> [ProtobufField] {
         guard let d = asData else { throw ProtobufError.typeMismatch }
@@ -161,7 +173,7 @@ extension ProtobufValue {
 
 // MARK: - Helpers
 
-extension Array where Element == ProtobufField {
+nonisolated extension Array where Element == ProtobufField {
     /// Return the first field matching the given field number.
     func first(_ number: Int) -> ProtobufValue? {
         first(where: { $0.fieldNumber == number })?.value
@@ -175,7 +187,7 @@ extension Array where Element == ProtobufField {
 
 // MARK: - Errors
 
-enum ProtobufError: LocalizedError {
+nonisolated enum ProtobufError: LocalizedError {
     case malformedVarint
     case unexpectedEnd
     case unknownWireType(Int)

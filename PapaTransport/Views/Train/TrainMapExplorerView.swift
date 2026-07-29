@@ -38,6 +38,7 @@ struct TrainMapExplorerView: View {
     @State private var sheetDetent: TrainSheetDetent = .medium
     @State private var sheetDragTranslation: CGFloat = 0
     @State private var isDraggingSheet = false
+    @State private var liveVehicles: [LiveVehicle] = []
 
     private let provider: BusProvider
     private static let autoRefreshInterval: Duration = .seconds(60)
@@ -187,6 +188,14 @@ struct TrainMapExplorerView: View {
                 }
                 .tag(stop.id)
             }
+
+            // Untagged so they stay out of the stop-selection binding.
+            ForEach(liveVehicles) { vehicle in
+                Annotation("", coordinate: vehicle.coordinate) {
+                    LiveVehicleMapPin(vehicle: vehicle)
+                }
+                .annotationTitles(.hidden)
+            }
         }
         .mapStyle(.standard(elevation: .realistic))
         .onMapCameraChange(frequency: .onEnd) { context in
@@ -313,6 +322,8 @@ struct TrainMapExplorerView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 16) {
+                    GTFSFeedWarningBanner(provider: provider)
+
                     if let statusMessage, !statusMessage.isEmpty {
                         mapInfoBanner(
                             title: statusMessage,
@@ -563,9 +574,36 @@ struct TrainMapExplorerView: View {
         }
     }
 
+    /// Victoria is served live by the PTV API and has no local schedule, so
+    /// there is nothing to expire there.
+    private func refreshFeedStatusIfNeeded() async {
+        guard provider.region == .queensland else { return }
+        try? await GTFSDatabase.shared.ensureReady()
+        await GTFSFeedStatusStore.shared.refresh()
+    }
+
+    /// Live vehicles come from TransLink's GTFS-realtime VehiclePositions feed,
+    /// which only covers Queensland.
+    private func refreshLiveVehicles() async {
+        guard provider == .queenslandTrainTransLink, let currentRegion else {
+            if !liveVehicles.isEmpty { liveVehicles = [] }
+            return
+        }
+
+        let vehicles = await QLDVehiclePositionService.shared.vehicles(
+            rail: true,
+            in: currentRegion
+        )
+        withAnimation(.easeInOut(duration: 0.3)) {
+            liveVehicles = vehicles
+        }
+    }
+
     private func bootstrap() async {
         guard !hasBootstrapped else { return }
         hasBootstrapped = true
+
+        await refreshFeedStatusIfNeeded()
 
         if let initialBusInfo {
             nearbyInfo = BusInfo(
@@ -593,7 +631,9 @@ struct TrainMapExplorerView: View {
                 span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
             )
             cameraPosition = .region(initialRegion)
+            currentRegion = initialRegion
             await reloadBoard(for: initialRegion)
+            await refreshLiveVehicles()
         } catch {
             await MainActor.run {
                 if error is LocationError {
@@ -611,6 +651,7 @@ struct TrainMapExplorerView: View {
         if let lastQueriedRegion {
             await reloadBoard(for: lastQueriedRegion)
         }
+        await refreshLiveVehicles()
     }
 
     private func scheduleReload(for region: MKCoordinateRegion) {
