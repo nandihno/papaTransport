@@ -215,9 +215,13 @@ nonisolated enum PTVEndpoint {
     /// that gets signed and PTV rejects the request with 403.
     private static let runRefAllowed = CharacterSet(charactersIn: "-._~").union(.alphanumerics)
 
+    /// `expand=VehicleDescriptor` is required for `vehicle_descriptor` to be
+    /// populated — without it the field comes back nil even on runs that have
+    /// one (verified 2026-07-31).
     static func pattern(runRef: String, routeType: PTVRouteType) -> String {
         let encoded = runRef.addingPercentEncoding(withAllowedCharacters: runRefAllowed) ?? runRef
-        return "/v3/pattern/run/\(encoded)/route_type/\(routeType.rawValue)?expand=Stop&expand=Run"
+        return "/v3/pattern/run/\(encoded)/route_type/\(routeType.rawValue)"
+            + "?expand=Stop&expand=Run&expand=VehicleDescriptor"
     }
 
     static func disruptionsForStop(_ stopId: Int) -> String {

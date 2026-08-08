@@ -217,20 +217,13 @@ final class TrainStatusNotificationService: NSObject, UNUserNotificationCenterDe
     }
 
     private func fetchConfiguredTrainInfo() async throws -> TrainInfo {
-        let defaults = UserDefaults.standard
-        let lineName = defaults.string(forKey: "trainLineName") ?? ""
-        let homeStation = defaults.string(forKey: "homeStation") ?? ""
-        let cityStation = defaults.string(forKey: "cityStation") ?? "Flinders Street"
+        let lineName = UserDefaults.standard.string(forKey: "trainLineName") ?? ""
 
         guard !lineName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw TrainStatusNotificationError.missingTrainLine
         }
 
-        return try await TrainService.shared.fetchTrainInfo(
-            lineName: lineName,
-            homeStation: homeStation,
-            cityStation: cityStation
-        )
+        return try await TrainService.shared.fetchTrainInfo(lineName: lineName)
     }
 
     private func deliverNotification(for trainInfo: TrainInfo) async throws {

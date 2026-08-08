@@ -1,6 +1,7 @@
 # PapaTransport — UI Revamp Plan
 
-Status: **Phase 1 complete** (2026-07-28). Phases 2–4 outstanding.
+Status: **Phases 1–3 complete and confirmed on device** (Phase 1 2026-07-28,
+Phases 2–3 2026-07-29). **Phase 4 outstanding** — see the end of this document.
 Context: the Victorian data layer now runs entirely on the PTV API. The views were
 built incrementally around the old GTFS-backed shape and have accumulated
 duplicate renderings, duplicate chrome, and a colour system that only ever worked
@@ -208,25 +209,40 @@ which existed in four copies, is now `ThemePalette.color(for:)`.
 
 ### Phase 2 — Cut the density
 
-**2.1 Merge the two departure renderings into one list.**
+**2.1 Delete the second departure list.**
 
-This is the biggest single win and the only item with real engineering cost,
-because the two renderings come from two different sources:
+> **Open question resolved (2026-07-29).** The plan assumed this needed a
+> matcher joining two sources. It does not. Queried live against PTV
+> `/v3/departures/route_type/0/stop/1097` (Hoppers Crossing), every field the
+> `Live ETA / ETD` grid displays is already in the *same response the board
+> alrready fetches*:
+>
+> | Grid column | PTV field | Sample |
+> |---|---|---|
+> | Time | `scheduled_departure_utc` | `2026-07-29T05:10:00Z` |
+> | Plat | `platform_number` | `2` |
+> | ETD | `estimated_departure_utc` | `2026-07-29T05:12:00Z` |
+> | Inbound/Outbound | `direction_id` + `directions` | `1 → City`, `16 → Werribee` |
+>
+> The only column PTV has no equivalent for is **ETA** — it exposes departure
+> times only, no arrival. In the screenshot that column is always ~1 minute
+> before ETD (3:14/3:15, 3:34/3:35, 3:10/3:11); at a station you are standing
+> at, ETD is the number that matters. Dropping ETA is the right call.
 
-- `LiveMetroDeparturesBlock` ← `TrainService.fetchLiveDepartures(station:)`, the
-  S3 MetroTrains feed. Uniquely supplies **platform**, the **ETA/ETD split**, and
-  the **inbound/outbound** classification.
-- The line groups ← PTV board. Supplies headsign, status, minutes away, and the
-  trip-detail linkage.
+So `LiveMetroDeparturesBlock` and the `TrainService.fetchLiveDepartures(station:)`
+call behind it are **deleted outright**, not merged. This removes:
 
-Proposal: PTV remains the row source; the S3 feed becomes **enrichment**, matched
-onto PTV rows by scheduled time, contributing platform and ETA/ETD. The separate
-grid then disappears with **no information lost**. Put the matcher in a small
-view model or in `PTVBoardService`, not in the view.
+- the duplicate rendering of every departure,
+- a second network round-trip per station expansion (the S3 MetroTrains feed),
+- `isLoadingLive` / `hasLoadedLive` / `liveDeparturesError` state from
+  `TrainStationSection`.
 
-Decision needed: whether platform + ETA/ETD can come from PTV directly, in which
-case the S3 dependency drops out of this screen entirely. Worth checking against
-`PTVIntegrationPlan.md` before building the matcher.
+`PTVBoardService` gains `platformNumber` and `directionId` on its rows —
+`PTVDeparture` already decodes both, they are simply discarded today.
+
+Two things PTV returns that the app currently throws away and should show:
+`runs[].destination_name`, and `express_stop_count` (a Flinders Street run in the
+same sample was express past 4 stops — worth a badge).
 
 **2.2 Regroup by direction, not by line.**
 
@@ -270,7 +286,269 @@ real work. Four nested levels → two.
 
 ---
 
-### Phase 3 — Modernise the shell
+### Phase 2 — implementation plan
+
+Four findings from investigating the code changed the shape of this phase. All
+four make it smaller than drafted.
+
+1. **PTV already returns everything the duplicate grid shows** (§2.1) — so that
+   item is a deletion, not a two-source merge.
+2. **`directionName == "City"` is an exact test.** Checked all 17 metro routes:
+   every one names its cityward direction literally `City`, and no other
+   direction name contains the word. The single exception is **Stony Point**
+   (`Frankston | Stony Point`), which legitimately has no cityward direction —
+   it is the isolated shuttle. This replaces the S3 feed's `toCity` flag with a
+   stronger signal.
+3. **Phase 1 orphaned four arrays.** Deleting `TrainCard` left
+   `TrainInfo.homeStationDepartures`, `homeStationAllDepartures`,
+   `cityStationDepartures` and `cityStationAllDepartures` with **zero readers**.
+   They are still fetched and decoded on every refresh.
+4. **Two of three S3 calls per refresh are now waste.** `fetchTrainInfo` fetches
+   `website_data.json` (still needed — line status, alerts, planned works),
+   `departures.json` and `op_timetable_{lineId}.json`. The latter two feed only
+   the orphaned arrays.
+
+#### Steps 1–3 ✅ DONE (2026-07-29)
+
+Implemented as specified below, with two adjustments made during build:
+
+- **Platform for Queensland stayed deferred** as planned — `platform: nil` at
+  both QLD call sites; the schema change is a separate piece of work.
+- **`BusStopSection` (bus/tram board) got the shared row but not grouping.**
+  The plan's step 2 text implied direction-grouping everywhere ("the same
+  component, different labels"), but applying it there is a second visible
+  layout change to a screen with no Phase-1-style visual verification yet.
+  Scoped down to: swap `BusDepartureRow` → `DepartureRow`, keep the flat list.
+  Direction-grouping for bus/tram is a small, separately-reviewable follow-up.
+- Net **−322 lines**: `TrainLineGroup`, `TrainLineGroupSection`,
+  `TrainDepartureRow`, and the old `BusDepartureRow` are gone, replaced by three
+  files in `Views/Common/` (`DepartureGrouping.swift`, `DepartureRow.swift`,
+  `DepartureGroupSection.swift`) shared across train and bus/tram.
+- Build clean, no new warnings in any touched file.
+
+#### Steps 4–6 ✅ DONE (2026-07-29)
+
+Net for all of Phase 2: **−831 lines** across 12 files.
+
+**Step 4 — deletions.** Removed `LiveMetroDeparturesBlock` and its four pieces
+of loading state, `TrainService.fetchLiveDepartures`, `fetchTimetable`,
+`filterAndMapTimetable`, `filterAndMapDepartures`, the four orphaned `TrainInfo`
+departure arrays, `homeStationName`/`cityStationName`, the `TrainDeparture`
+model, and the `DeparturesAPIResponse`/`DepartureAPIEntry` types.
+
+`TrainService` went from **298 → 136 lines** and from **three S3 requests per
+refresh to one**. `departures.json` and `op_timetable_<line_id>.json` are no
+longer fetched for the board.
+
+Two things the plan had wrong, caught during the work:
+
+- **`TimetableAPIEntry` could NOT be deleted.** The plan listed it as
+  removable-if-unreferenced. It is still live — `TrainSettingsViews` decodes
+  `op_timetable_<line_id>.json` to populate the Home/City Station picker lists.
+  Kept, along with that one call.
+- **Two `TrainService` statics became orphaned** as a knock-on:
+  `secondsSinceMidnight()` and `secondsToTimeString()`. Nothing outside the
+  file called them once the departure mapping went. Removed;
+  `currentTimeString()` survives.
+
+`TrainStatusNotificationService` was the flagged risk. It reads `lineName`,
+`serviceIsGood`, `serviceStatusMessage`, `melbourneTimeAtFetch` and `alerts` —
+all five survive. Its `fetchConfiguredTrainInfo()` was simplified to drop the
+two station arguments it no longer needs. Compiles clean.
+
+**Step 5 — headers.** Count now appears once (sheet grip handle) instead of
+three times; title once instead of twice. The map pill lost the count and is now
+purely about map state ("Pan the map…" / "Zoom in…") plus the loading spinner,
+which moved to the grip handle beside the count.
+
+**Step 6 — chrome.** `nearestStationsCard` became `nearestStationsList` — no
+`CardContainer`. `TrainStationSection` and `BusStopSection` lost their per-row
+borders in favour of a tint when selected and a hairline when not. Nesting
+inside the sheet went from **four levels to two**. `BusCard` lost its card
+chrome too, since it only ever renders inside the bus/tram sheet.
+
+Knock-on removals: `nearbyStationsLabel` (duplicated `mapSummary`),
+`minimizeButton` + its `trainNearestStationsMinimized` setting (the card it
+collapsed no longer exists), `userCoordinateDescription` (only ever shown in the
+deleted card header), and the now-unused `homeStation`/`cityStation`
+`@AppStorage` in `CommutingView`.
+
+The three status cards (`TrainStatusSummaryCard`, `TrainPlannedWorksBoard`,
+`QLDTrainNetworkStatusCard`) **keep** their `CardContainer`. They were always
+sheet → card, i.e. two levels; they were never part of the four-level problem,
+and they are genuinely distinct panels rather than list rows.
+
+---
+
+### ⚠️ Phase 2 leaves one loose end
+
+The **Home Station** and **City Station** pickers in Settings now have no effect
+on anything. They were already inert — Phase 1 deleted `TrainCard`, the only
+reader of the departure arrays they fed — and Phase 2 removed the plumbing that
+carried them. The pickers still work and still persist a value; nothing consumes
+it.
+
+Deliberately left in place: removing user-facing settings is a product decision,
+not a refactor. Either delete both pickers, or give them a purpose (they would
+be a natural fit for pinning a home station as a favourite on the Trains board,
+the way the Queensland home station already works).
+
+### ✅ Phases 1–2 visually confirmed on device (2026-07-29)
+
+Confirmed by the developer running the app after Phase 2 landed. This closes the
+standing risk that had run through both phases: every change up to this point was
+compile-verified, and data-layer changes were verified against the live PTV and
+TransLink APIs, but nothing had been rendered and looked at until now.
+
+Note the simulator was unavailable for the whole of Phases 1–2, so all
+verification was CLI builds plus live-API checks plus the developer's own device.
+If that is still the case for Phase 3, the same applies — the fix is
+`sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`.
+
+#### Step 1 — Carry the fields PTV already returns
+
+`BusDeparture` (`Models/BusModels.swift`) gains:
+
+```swift
+let platform: String?        // PTVDeparture.platformNumber
+let directionId: Int?        // PTVDeparture.directionId
+let directionName: String?   // PTVDirection.directionName — "City" / "Werribee"
+let expressStopCount: Int    // PTVRun.expressStopCount
+let isAtPlatform: Bool       // PTVDeparture.atPlatform
+```
+
+All five are already decoded and then discarded. `BusDeparture` uses `let`
+without defaults, so its synthesised memberwise init means **all four
+construction sites must be updated**: `BusModels.swift:292` (placeholder),
+`BusService.swift:375` (QLD bus), `QLDTrainMapService.swift:351` (QLD train),
+`PTVBoardService.swift:516` (all Victoria).
+
+Queensland passes `platform: nil`. SEQ `stops.txt` *does* carry `platform_code`,
+but importing it means a schema change in both `GTFSFeedImporter` and
+`scripts/build_seq_db.sh` plus a database rebuild — **deferred, not Phase 2.**
+
+#### Step 2 — Group by direction
+
+New `DepartureDirectionGroup` deriving groups from `directionName`, cityward
+first. Cityward test is `directionName == "City"`, with a documented note that
+Stony Point yields no cityward group by design.
+
+For bus and tram, `directionName` is a place name rather than City/Outbound, so
+the grouping is still by direction but without the cityward ordering — the same
+component, different labels.
+
+#### Step 3 — One shared departure row
+
+A single `DepartureRow` in `Views/Common/` replaces three near-identical rows:
+`TrainDepartureRow`, the inline row inside `TrainLineGroupSection`, and
+`BusDepartureRow`. Layout per §2.3 — coloured status dot, one time, platform,
+delay text only when non-zero, express badge when `expressStopCount > 0`.
+
+#### Step 4 — Delete the duplicate and the orphaned work
+
+- `LiveMetroDeparturesBlock` (`TrainMapExplorerView.swift:1205`) and its state
+  (`liveDepartures`, `isLoadingLive`, `hasLoadedLive`, `liveDeparturesError`).
+- `TrainService.fetchLiveDepartures(station:)` — one caller, which is the block
+  above.
+- The four orphaned `TrainInfo` arrays, the `departures.json` and
+  `op_timetable_*.json` fetches that feed only them, and `fetchTimetable`.
+- `TrainDeparture` and `TimetableAPIEntry` if nothing else references them once
+  the above are gone.
+
+`TrainService` is left doing exactly one thing: line status from
+`website_data.json`. **`TrainStatusNotificationService` also consumes
+`TrainInfo`** (`alerts`, `lineName`, `serviceIsGood`, `serviceStatusMessage`,
+`melbourneTimeAtFetch`) — all survive this cut, but it must be re-checked before
+deleting anything from the model.
+
+#### Step 5 — Deduplicate the headers
+
+Count stays in the sheet grip only (drop from map pill and card). Title stays in
+the grip only (drop the card's `Label`). Touches `headerOverlay`, `gripHandle`
+and `nearestStationsCard`.
+
+#### Step 6 — Flatten the chrome
+
+`nearestStationsCard` stops using `CardContainer`; `TrainStationSection` loses
+its own fill and border. Target two nesting levels inside the sheet instead of
+four. Same for `BusCard` inside its sheet.
+
+#### Order and verification
+
+| Step | Risk | Verify by |
+|---|---|---|
+| 1–2 model + grouping | Low, mechanical | Builds; four call sites updated |
+| 3 shared row | Low | Builds; visual check |
+| 4 deletions | **Medium** — touches the notification service's data | Build, then confirm `TrainStatusNotificationService` still compiles and fires |
+| 5–6 chrome | Low | Visual only |
+
+Steps 1–4 are worth landing as one unit, since the row cannot show platform
+until step 1 and the deletion is only safe once the row replaces it. Steps 5–6
+are independent and can follow.
+
+**Visual verification is still blocked** — Phase 1's colour and type changes have
+never been seen on screen, and Phase 2 changes layout and information
+architecture, not just tokens. This is the phase where looking at it matters most.
+
+---
+
+### Phase 3 — Modernise the shell ✅ DONE (2026-07-29)
+
+Delivered as planned, plus one item the plan had listed as a separate decision.
+
+**Shared scaffold.** `Views/Common/MapSheetScaffold.swift` (253 lines) now owns
+the detent maths, drag gesture, sheet chrome, grip handle and floating control
+buttons. Callers pass a title, a summary, and three content slots (map, header
+pill, sheet body). `TrainMapExplorerView` **1322 → 1078**, `BusMapExplorerView`
+**813 → 574** — nine duplicated helpers and two duplicate `SheetDetent` enums
+gone.
+
+Confirmed before extracting: five of the six candidate helpers were
+**byte-identical** between the two files; `mapInfoBanner` differed by a single
+`.fixedSize` line, which the shared `MapInfoBanner` keeps.
+
+The custom sheet container was **kept** rather than switching to
+`.presentationDetents`, for the reason given in §3.1 — a presented sheet covers
+the tab bar and all four tabs must stay reachable. That decision is now recorded
+in the scaffold itself.
+
+**Liquid Glass.** `.glassEffect` on the sheet (r30), header pill (r18) and the
+two control buttons (`.circle`, `.interactive()`), with a single
+`GlassEffectContainer` around the header so its three surfaces share rendering.
+The three map-pin labels moved from `.ultraThinMaterial` to
+`.glassEffect(.regular, in: .capsule)`.
+
+**The two full-screen scrim gradients are gone.** Both explorers drew a
+black-to-clear gradient at the top and a `backgroundBase` gradient at the bottom
+purely to keep overlay text legible over the map. Glass does that itself.
+
+**No `#available` gates anywhere.** Minimum deployment is iOS 26.4, so Liquid
+Glass is unconditionally present. Worth stating because the standard guidance is
+to gate it.
+
+**Tab bar minimise.** `.tabBarMinimizeBehavior(.onScrollDown)` on the `TabView`,
+plus `.scrollEdgeEffectStyle(.soft, for: .top)` on the sheet's scroll view.
+
+#### Also done: the Phase 2 loose end
+
+The **Home/City Station pickers are removed.** They had been inert since Phase 1
+deleted their only reader. Gone: both `NavigationLink`s, the two `@AppStorage`
+keys, `StationPickerView`, the line-change reset that cleared them, and
+`TimetableAPIEntry`.
+
+That last one is worth noting — Phase 2 explicitly could *not* delete
+`TimetableAPIEntry` because `StationPickerView` still decoded it. With the picker
+gone it became dead, and with it the last
+`op_timetable_<line_id>.json` request. **The app now makes exactly one S3
+request** (`website_data.json`, for line status), down from four at the start of
+this work.
+
+Existing installs keep orphaned `homeStation`/`cityStation` keys in
+`UserDefaults`. Harmless; not worth migration code to clear.
+
+---
+
+### Phase 3 — original plan
 
 **3.1 Extract one shared `MapSheetScaffold`.**
 
@@ -304,6 +582,103 @@ at the grip handle instead of colliding with it.
 
 ---
 
+### Victorian live vehicles ✅ DONE (2026-07-31)
+
+Added ahead of Phase 4, since it is map work and shares its plumbing.
+
+PTV exposes `vehicle_position` (lat/lon/**bearing**/expiry) on Run objects, and
+critically it expands on **`/v3/departures`** — the call the board already makes.
+One request returned 48 runs with 36 positions, so this cost **no extra network
+calls**, just a longer `expand` list.
+
+- `PTVVehiclePosition` decodes lat/lon/bearing/`expiry_time`, accepting numbers
+  or strings for the numerics and dropping stale or zero fixes.
+- `BusInfo.liveVehicles` carries them (a `var` with a default, so the ~30
+  existing construction sites were untouched). Keyed by run ref while
+  collecting, so a vehicle serving several stops in view is drawn once.
+- The heading arrow in `LiveVehicleMapPin` is **restored** — it was deleted in
+  the Queensland work because TransLink never populates `bearing`. It now
+  renders only when a bearing exists, so Victorian vehicles point and Queensland
+  ones stay plain dots.
+- **Trams excluded.** Measured 0 of 55 tram runs across four corridors, so the
+  tram board does not ask for the expansion.
+
+Verified by decoding the live response with the shipped model: 45 of 45 train
+positions parsed, all fresh, all with a bearing, none outside Victoria.
+
+Not yet seen on screen.
+
+### Three follow-ups off the back of it (2026-07-31)
+
+Measured what each feed actually populates, then built the three things worth
+having. All verified against live data; none seen on screen yet.
+
+**Tap a vehicle → its trip detail.** The pin resolves its `tripId` against the
+current board and opens the existing trip sheet. Vehicles that do not resolve
+stay **non-interactive** rather than giving a dead tap — that is the normal case
+in Queensland, whose feed is network-wide and includes trips calling nowhere in
+view. Victoria's positions come from the board itself, so essentially all
+resolve. The 18pt dot gets a 44pt hit area.
+
+**"N stops away" on Queensland departures.** TransLink populates
+`current_stop_sequence` on **100% of vehicles** (58/58 rail, 945/945 bus,
+sequences 1–81), so `stopSequence − currentStopSequence` gives a real distance.
+Already-passed stops return nil rather than a negative. `QLDVehiclePositionService`
+gained a 20-second actor-backed cache with in-flight coalescing, so the board
+and the map pins **share one 230 KB fetch** instead of each making their own.
+
+**Train type on the Victorian trip sheet.** "6 Car Xtrapolis · 142m". Needed
+`expand=VehicleDescriptor` on the pattern endpoint — without it the field comes
+back nil even on runs that have one.
+
+What the feeds *don't* carry, checked rather than assumed: TransLink populates
+none of `occupancy_status`, `occupancy_percentage`, `congestion_level`, `bearing`,
+`speed` or `license_plate`. So there is no "how full is this bus" available.
+
+#### Two performance bugs this introduced, and the fix
+
+Reported as "the cog and location buttons are sometimes unresponsive". Not
+threading — two main-thread problems in the annotation layer:
+
+1. **`departuresByTrip` was a computed property referenced inside the
+   `ForEach`.** Swift rebuilt the entire `[tripId: departure]` dictionary once
+   *per vehicle*: 250 vehicles against a 150-departure board ≈ 37,000 insertions
+   per body evaluation. Measured **3.36 ms → 0.019 ms** (177×) after building
+   the index once via `[LiveVehicle].annotations(matching:)`. At 60 fps the
+   frame budget is 16.7 ms, so 3.4 ms of pure dictionary churn on top of MapKit
+   was enough to drop frames and miss taps.
+
+2. **The 44pt touch target was applied to every pin, not just tappable ones.**
+   Most Queensland vehicles resolve to no board departure, so the map was
+   covered in hundreds of dead 44×44 hit-test rectangles competing with pan
+   gestures. Non-tappable pins are now `.allowsHitTesting(false)`.
+
+The general lesson, worth remembering: **never reference a computed collection
+from inside a `ForEach` body.** It looks like a lookup and behaves like a rebuild.
+
+Those two fixed the stutter but **not** the reported symptom, which turned out to
+be a separate report — "the cog works once, then never again". Two more causes,
+both mine, both from Phase 3 and the vehicle-tap work:
+
+3. **A plain button wrapped in interactive glass.** The control buttons were
+   `.buttonStyle(.plain)` + `.glassEffect(.regular.interactive(), in: .circle)`.
+   That puts an interactive glass layer *outside* the button, running its own
+   press handling against the button's. `.buttonStyle(.glass)` is the supported
+   way to build a glass button, and the guidance says so — this was a
+   straightforward deviation. The `GlassEffectContainer` went too: once the
+   buttons carried their own glass, it wrapped a single surface and only added a
+   layer between the controls and their touches.
+
+4. **Three `.sheet` modifiers in the bus subtree.** `BusCard` had one, the
+   vehicle-tap work added another to `BusMapExplorerView`, and the settings sheet
+   sits on the `TabView` above both. SwiftUI presents one sheet per context, so a
+   confused presentation state blocks the settings sheet from opening — a dead
+   cog. `BusCard` now raises its selection through an optional binding (the
+   pattern the file already used for `selectedStopID`), leaving one sheet in the
+   subtree and matching the train tab, which had always worked.
+
+---
+
 ### Phase 4 — Make the map earn its space
 
 The map is the thing worth keeping, so give it more to do:
@@ -323,8 +698,8 @@ The map is the thing worth keeping, so give it more to do:
 | Phase | Effort | Risk | User-visible result |
 |---|---|---|---|
 | ~~1 — foundations~~ ✅ | done | — | Text readable; type scales with accessibility settings |
-| 2 — density | Largest; §2.1 needs a data decision | Medium — changes what's on screen | Screen roughly halves in visual weight |
-| 3 — shell | Moderate | Low–medium — glass is a swap, sheet extraction needs care | Looks like a 2026 iOS app |
+| ~~2 — density~~ ✅ | done, −831 lines | — | Duplicate list gone; grouped by direction; nesting 4 levels → 2 |
+| ~~3 — shell~~ ✅ | done | — | Glass chrome; ~490 lines of duplicated sheet code gone |
 | 4 — map | Open-ended | Low, additive | Map becomes genuinely useful, not decorative |
 
 Phase 1 is worth doing on its own regardless of what happens to the rest — it is
@@ -332,8 +707,9 @@ the fix for the actual complaint and it cannot break layout.
 
 ## 4. Open questions
 
-1. **Can PTV supply platform and ETA/ETD directly?** If yes, §2.1 gets much
-   simpler and the S3 MetroTrains dependency leaves this screen.
+1. ~~Can PTV supply platform and ETA/ETD directly?~~ **Resolved 2026-07-29:**
+   yes for platform, ETD and direction; no for ETA (PTV has no arrival field).
+   See §2.1 — the S3 dependency leaves this screen entirely.
 2. **Should the tab bar be preserved as-is?** It is the only thing blocking the
    native-sheet simplification in §3.1.
 3. ~~Are the `weather` and `health` theme sets still used?~~ **Resolved:**

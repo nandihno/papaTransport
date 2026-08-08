@@ -2,12 +2,6 @@ import CoreLocation
 import MapKit
 import SwiftUI
 
-private enum BusSheetDetent: CaseIterable {
-    case collapsed
-    case medium
-    case expanded
-}
-
 struct BusMapExplorerView: View {
     let provider: BusProvider
     let initialBusInfo: BusInfo?
@@ -32,12 +26,12 @@ struct BusMapExplorerView: View {
     @State private var hasBootstrapped = false
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var sheetDetent: BusSheetDetent = .medium
-    @State private var sheetDragTranslation: CGFloat = 0
-    @State private var isDraggingSheet = false
     @State private var routeSearchText = ""
     @State private var currentRegion: MKCoordinateRegion?
     @State private var liveVehicles: [LiveVehicle] = []
+    /// Opened by tapping a vehicle pin. The board's own rows open the same
+    /// sheet from inside `BusCard`, which keeps its own state.
+    @State private var selectedTripRequest: BusTripRequest?
 
     private static let autoRefreshInterval: Duration = .seconds(60)
 
@@ -119,48 +113,28 @@ struct BusMapExplorerView: View {
     private var nearbyEmptyStateMessage: String? {
         guard isRouteSearchActive else { return nil }
 
+        if nearbyBusInfo.nearbyStops.contains(where: { $0.departureDataAvailability == .unavailable }) {
+            return "Route search requires live departures. Clear the route search to see cached stop locations."
+        }
+
         return "No upcoming route \(normalizedRouteSearchText) departures were found at \(provider.stopsNoun) within 300m of the map center. Pan the map to search elsewhere or clear the route search."
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .top) {
-                mapCard
-                    .ignoresSafeArea()
-
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0.44),
-                        Color.black.opacity(0.14),
-                        Color.clear
-                    ],
-                    startPoint: .top,
-                    endPoint: .center
-                )
-                .ignoresSafeArea(edges: .top)
-                .allowsHitTesting(false)
-
-                LinearGradient(
-                    colors: [
-                        Color.clear,
-                        palette.backgroundBase.opacity(0.12),
-                        palette.backgroundBase.opacity(0.58)
-                    ],
-                    startPoint: .center,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea(edges: .bottom)
-                .allowsHitTesting(false)
-
-                headerOverlay(topInset: proxy.safeAreaInsets.top)
-
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    bottomSheet(proxy: proxy)
-                }
-            }
+        MapSheetScaffold(
+            title: "Nearby \(provider.stopsTitle)",
+            summary: mapSummary,
+            isLoading: isLoading,
+            onOpenSettings: onOpenSettings,
+            onRecenter: recenterOnUser,
+            onRefresh: { await refreshAll() }
+        ) {
+            mapCard
+        } headerContent: {
+            headerPill
+        } sheetContent: {
+            sheetSections
         }
-        .background(palette.backgroundBase)
         .task {
             await bootstrap()
         }
@@ -172,6 +146,11 @@ struct BusMapExplorerView: View {
         }
         .onChange(of: displayedNearbyStopIDs) { _, _ in
             synchronizeSelectedStopWithDisplayedStops()
+        }
+        .sheet(item: $selectedTripRequest) { request in
+            BusTripDetailSheet(request: request)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -198,9 +177,12 @@ struct BusMapExplorerView: View {
             }
 
             // Untagged so they stay out of the stop-selection binding.
-            ForEach(liveVehicles) { vehicle in
-                Annotation("", coordinate: vehicle.coordinate) {
-                    LiveVehicleMapPin(vehicle: vehicle)
+            ForEach(vehicleAnnotations) { annotation in
+                Annotation("", coordinate: annotation.vehicle.coordinate) {
+                    LiveVehicleMapPin(
+                        vehicle: annotation.vehicle,
+                        onTap: annotation.isTappable ? { openTrip(annotation) } : nil
+                    )
                 }
                 .annotationTitles(.hidden)
             }
@@ -216,215 +198,65 @@ struct BusMapExplorerView: View {
         }
     }
 
+    /// Contents of the floating pill over the map.
     @ViewBuilder
-    private func headerOverlay(topInset: CGFloat) -> some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        Label(mapSummary, systemImage: "mappin.and.ellipse")
-                            .font(.transitBadge)
-                            .foregroundStyle(.primary)
+    private var headerPill: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Pan the map to refresh stops around the center point.")
+                .font(.transitCaption)
+                .foregroundStyle(palette.textSecondary)
 
-                        if isLoading {
-                            ProgressView()
-                                .scaleEffect(0.82)
-                        }
-                    }
-
-                    Text("Pan the map to refresh stops around the center point.")
-                        .font(.transitCaption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.primary.opacity(0.10), lineWidth: 1)
-                }
-
-                if let errorMessage, !errorMessage.isEmpty {
-                    Text(errorMessage)
-                        .font(.transitCaption)
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                }
-            }
-
-            Spacer()
-
-            VStack(spacing: 12) {
-                overlayControlButton(systemName: "gearshape.fill", action: onOpenSettings)
-                overlayControlButton(systemName: "location.fill", action: recenterOnUser)
-            }
-        }
-        .padding(.top, max(topInset, 12))
-        .padding(.horizontal, 18)
-    }
-
-    @ViewBuilder
-    private func mapInfoBanner(title: String, detail: String?, icon: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .foregroundStyle(palette.accentText)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.transitLabel)
-                    .foregroundStyle(palette.textPrimary)
-                if let detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(.transitCaption)
-                        .foregroundStyle(palette.textSecondary)
-                }
-            }
-            Spacer()
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func overlayControlButton(systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 18, weight: .bold))
-                .foregroundStyle(.primary)
-                .frame(width: 54, height: 54)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(Color.primary.opacity(0.10), lineWidth: 1)
-                }
-        }
-        .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func bottomSheet(proxy: GeometryProxy) -> some View {
-        let safeBottom = max(proxy.safeAreaInsets.bottom, 12)
-        let height = currentSheetHeight(in: proxy)
-
-        VStack(spacing: 0) {
-            gripHandle
-                .contentShape(Rectangle())
-                .gesture(sheetDragGesture(in: proxy))
-
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 14) {
-                    GTFSFeedWarningBanner(provider: provider)
-
-                    if let statusMessage, !statusMessage.isEmpty {
-                        mapInfoBanner(
-                            title: statusMessage,
-                            detail: statusDetail,
-                            icon: "clock.badge.checkmark"
-                        )
-                    }
-
-                    if let progressStage, !progressStage.isEmpty {
-                        mapInfoBanner(
-                            title: progressStage,
-                            detail: progressDetail,
-                            icon: "arrow.triangle.2.circlepath"
-                        )
-                    }
-
-                    routeSearchField
-
-                    BusCard(
-                        title: nearbyCardTitle,
-                        busInfo: displayedNearbyBusInfo,
-                        selectedStopID: $selectedStopID,
-                        showsNearby: true,
-                        showsFavourites: false,
-                        emptyStateMessageOverride: nearbyEmptyStateMessage
-                    )
-
-                    if !favouriteBusInfo.favouriteStops.isEmpty {
-                        BusCard(
-                            title: "Favourite \(provider.stopsTitle)",
-                            busInfo: favouriteBusInfo,
-                            showsNearby: false,
-                            showsFavourites: true
-                        )
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.bottom, safeBottom + 10)
-            }
-            .refreshable {
-                await refreshAll()
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: height, alignment: .top)
-        .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .fill(.ultraThinMaterial)
-
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                palette.surfaceOverlay.opacity(0.55),
-                                palette.backgroundBase.opacity(0.72)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-            }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .strokeBorder(palette.textTertiary.opacity(0.18), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
-        .padding(.horizontal, 8)
-        .padding(.bottom, 8)
-        .shadow(color: Color.black.opacity(0.14), radius: 24, y: -6)
-        .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: sheetDetent)
-        .transaction { transaction in
-            if isDraggingSheet {
-                transaction.animation = nil
+            if let errorMessage, !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.transitCaption)
+                    .foregroundStyle(palette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
-    private var gripHandle: some View {
-        VStack(spacing: 10) {
-            Capsule()
-                .fill(palette.textTertiary.opacity(0.5))
-                .frame(width: 40, height: 4)
-                .padding(.top, 10)
+    @ViewBuilder
+    private var sheetSections: some View {
+        GTFSFeedWarningBanner(provider: provider)
 
-            HStack(alignment: .center) {
-                Text("Nearby \(provider.stopsTitle)")
-                    .font(.transitBody)
-                    .foregroundStyle(palette.accentText)
+        if let statusMessage, !statusMessage.isEmpty {
+            MapInfoBanner(
+                title: statusMessage,
+                detail: statusDetail,
+                icon: "clock.badge.checkmark"
+            )
+        }
 
-                Spacer()
+        if let progressStage, !progressStage.isEmpty {
+            MapInfoBanner(
+                title: progressStage,
+                detail: progressDetail,
+                icon: "arrow.triangle.2.circlepath"
+            )
+        }
 
-                Text(mapSummary)
-                    .font(.transitBadge)
-                    .foregroundStyle(palette.textSecondary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(palette.surfaceRaised.opacity(0.8), in: Capsule())
-            }
-            .padding(.horizontal, 18)
+        routeSearchField
 
-            Divider()
-                .padding(.horizontal, 18)
+        // Both cards raise their trip selection to this view, so the whole
+        // subtree presents from one `.sheet` rather than three competing ones.
+        BusCard(
+            title: nearbyCardTitle,
+            busInfo: displayedNearbyBusInfo,
+            selectedStopID: $selectedStopID,
+            selectedTrip: $selectedTripRequest,
+            showsNearby: true,
+            showsFavourites: false,
+            emptyStateMessageOverride: nearbyEmptyStateMessage
+        )
+
+        if !favouriteBusInfo.favouriteStops.isEmpty {
+            BusCard(
+                title: "Favourite \(provider.stopsTitle)",
+                busInfo: favouriteBusInfo,
+                selectedTrip: $selectedTripRequest,
+                showsNearby: false,
+                showsFavourites: true
+            )
         }
     }
 
@@ -462,58 +294,6 @@ struct BusMapExplorerView: View {
         }
     }
 
-    private func currentSheetHeight(in proxy: GeometryProxy) -> CGFloat {
-        let heights = sheetHeights(in: proxy)
-        let baseHeight = heights[sheetDetent] ?? heights[.medium] ?? 360
-        let adjustedHeight = baseHeight - sheetDragTranslation
-        return min(max(adjustedHeight, heights[.collapsed] ?? adjustedHeight), heights[.expanded] ?? adjustedHeight)
-    }
-
-    private func sheetHeights(in proxy: GeometryProxy) -> [BusSheetDetent: CGFloat] {
-        let safeTop = max(proxy.safeAreaInsets.top, 12)
-        let safeBottom = max(proxy.safeAreaInsets.bottom, 12)
-        let availableHeight = proxy.size.height - safeTop
-        let collapsed = max(104, safeBottom + 92)
-        let expanded = min(availableHeight - 18, proxy.size.height * 0.88)
-        let medium = min(max(360, proxy.size.height * 0.47), expanded - 80)
-
-        return [
-            .collapsed: collapsed,
-            .medium: max(collapsed + 60, medium),
-            .expanded: max(medium + 80, expanded)
-        ]
-    }
-
-    private func sheetDragGesture(in proxy: GeometryProxy) -> some Gesture {
-        DragGesture(minimumDistance: 8, coordinateSpace: .global)
-            .onChanged { value in
-                isDraggingSheet = true
-                sheetDragTranslation = value.translation.height
-            }
-            .onEnded { value in
-                let heights = sheetHeights(in: proxy)
-                let baseHeight = heights[sheetDetent] ?? heights[.medium] ?? 360
-                let projectedHeight = min(
-                    max(baseHeight - value.predictedEndTranslation.height, heights[.collapsed] ?? baseHeight),
-                    heights[.expanded] ?? baseHeight
-                )
-
-                if let nearestDetent = BusSheetDetent.allCases.min(by: {
-                    abs((heights[$0] ?? projectedHeight) - projectedHeight) <
-                    abs((heights[$1] ?? projectedHeight) - projectedHeight)
-                }) {
-                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.84)) {
-                        sheetDetent = nearestDetent
-                        sheetDragTranslation = 0
-                        isDraggingSheet = false
-                    }
-                } else {
-                    sheetDragTranslation = 0
-                    isDraggingSheet = false
-                }
-            }
-    }
-
     /// Victoria is served live by the PTV API and has no local schedule, so
     /// there is nothing to expire there.
     private func refreshFeedStatusIfNeeded() async {
@@ -524,8 +304,17 @@ struct BusMapExplorerView: View {
 
     /// Live vehicles come from TransLink's GTFS-realtime VehiclePositions feed,
     /// which only covers Queensland.
+    /// The two regions supply vehicles by different routes.
+    ///
+    /// Queensland has a separate network-wide GTFS-RT feed, fetched here and
+    /// filtered to the viewport. Victoria attaches positions to the departures
+    /// response, so they arrive already on `nearbyBusInfo` and only cover runs
+    /// serving the stops in view — nothing extra to fetch.
+    ///
+    /// Victorian *trams* have none: PTV returns no position for any tram run.
     private func refreshLiveVehicles() async {
-        guard provider == .queenslandTransLink, let currentRegion else {
+        guard provider == .queenslandTransLink else { return }
+        guard let currentRegion else {
             if !liveVehicles.isEmpty { liveVehicles = [] }
             return
         }
@@ -537,6 +326,31 @@ struct BusMapExplorerView: View {
         withAnimation(.easeInOut(duration: 0.3)) {
             liveVehicles = vehicles
         }
+    }
+
+    /// Queensland's viewport feed, or Victoria's board-attached positions.
+    private var displayedVehicles: [LiveVehicle] {
+        provider == .queenslandTransLink ? liveVehicles : nearbyBusInfo.liveVehicles
+    }
+
+    /// Vehicles paired with the board departure each is working.
+    ///
+    /// Not every vehicle resolves: Queensland's feed is network-wide, so it
+    /// includes trips that call at no stop in view. Those pins stay
+    /// non-interactive rather than giving a tap that does nothing.
+    private var vehicleAnnotations: [VehicleAnnotation] {
+        displayedVehicles.annotations(
+            matching: displayedNearbyStops + favouriteBusInfo.favouriteStops
+        )
+    }
+
+    private func openTrip(_ annotation: VehicleAnnotation) {
+        guard let stopId = annotation.stopId, let departure = annotation.departure else { return }
+        selectedTripRequest = BusTripRequest(
+            provider: provider,
+            stopId: stopId,
+            departure: departure
+        )
     }
 
     private func bootstrap() async {
@@ -744,7 +558,8 @@ struct BusMapExplorerView: View {
                 latitude: stop.latitude,
                 longitude: stop.longitude,
                 distanceMeters: stop.distanceMeters,
-                departures: matchingDepartures
+                departures: matchingDepartures,
+                departureDataAvailability: stop.departureDataAvailability
             )
         }
     }
@@ -793,7 +608,7 @@ private struct BusStopMapPin: View {
                     .lineLimit(1)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(.ultraThinMaterial, in: Capsule())
+                    .glassEffect(.regular, in: .capsule)
             }
         }
     }

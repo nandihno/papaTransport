@@ -71,22 +71,61 @@ actor PTVStopIDResolver {
         // Stations sprawl further than a bus stop pole, so search wider.
         let radius = routeType == .train ? 800 : 250
 
+        let bounds = PTVStopCache.boundingBox(
+            latitude: favourite.latitude,
+            longitude: favourite.longitude,
+            radiusMeters: radius
+        )
+        let cacheKey = PTVStopCacheTileKey(
+            latitude: favourite.latitude,
+            longitude: favourite.longitude,
+            radiusMeters: radius,
+            routeTypes: [routeType]
+        )
+        let stopCache = PTVStopCache.shared
+        let cached = await stopCache.lookup(
+            minLatitude: bounds.minLatitude,
+            maxLatitude: bounds.maxLatitude,
+            minLongitude: bounds.minLongitude,
+            maxLongitude: bounds.maxLongitude,
+            referenceLatitude: favourite.latitude,
+            referenceLongitude: favourite.longitude,
+            routeTypes: [routeType],
+            coverageKeys: [cacheKey],
+            maxDistanceMeters: radius
+        )
+
         let candidates: [PTVStop]
-        do {
-            let response = try await PTVAPIClient.shared.get(
-                PTVEndpoint.stopsNear(
-                    latitude: favourite.latitude,
-                    longitude: favourite.longitude,
+        if cached.missingCoverage.isEmpty {
+            candidates = cached.stops
+        } else {
+            do {
+                let fetched = try await PTVAPIClient.shared.get(
+                    PTVEndpoint.stopsNear(
+                        latitude: favourite.latitude,
+                        longitude: favourite.longitude,
+                        routeTypes: [routeType],
+                        maxDistanceMeters: radius
+                    ),
+                    as: PTVStopsResponse.self,
+                    cacheFor: 3600
+                ).stops
+                await stopCache.store(fetched, swept: cached.missingCoverage)
+                candidates = await stopCache.lookup(
+                    minLatitude: bounds.minLatitude,
+                    maxLatitude: bounds.maxLatitude,
+                    minLongitude: bounds.minLongitude,
+                    maxLongitude: bounds.maxLongitude,
+                    referenceLatitude: favourite.latitude,
+                    referenceLongitude: favourite.longitude,
                     routeTypes: [routeType],
+                    coverageKeys: [],
                     maxDistanceMeters: radius
-                ),
-                as: PTVStopsResponse.self,
-                cacheFor: 3600
-            )
-            candidates = response.stops
-        } catch {
-            print("⚠️ PTV stop-id resolution failed for \(favourite.stopName): \(error.localizedDescription)")
-            return nil
+                ).stops
+            } catch {
+                print("⚠️ PTV stop-id resolution failed for \(favourite.stopName): \(error.localizedDescription)")
+                candidates = cached.stops
+            }
         }
 
         guard !candidates.isEmpty else { return nil }

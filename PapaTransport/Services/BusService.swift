@@ -72,15 +72,20 @@ nonisolated final class BusService: BusDataProviding {
         // 5. Fetch GTFS-RT data concurrently
         async let tripUpdatesTask = fetchTripUpdates()
         async let alertsTask = fetchAlerts()
+        // Shares a cached fetch with the map's vehicle pins — see
+        // QLDVehiclePositionService.FeedCache.
+        async let stopSequencesTask = QLDVehiclePositionService.shared.stopSequencesByTrip(rail: false)
 
         let tripUpdates = await tripUpdatesTask
         let rawAlerts = await alertsTask
+        let stopSequences = await stopSequencesTask
 
         // 6. Build the departure board
         let stopDepartureMap = buildDepartureBoard(
             scheduled: scheduledDepartures,
             tripUpdates: tripUpdates,
-            nowSeconds: nowSeconds
+            nowSeconds: nowSeconds,
+            stopSequences: stopSequences
         )
 
         // 7. Assemble NearbyBusStop models (proximity-based)
@@ -162,14 +167,19 @@ nonisolated final class BusService: BusDataProviding {
 
         async let tripUpdatesTask = fetchTripUpdates()
         async let alertsTask = fetchAlerts()
+        // Shares a cached fetch with the map's vehicle pins — see
+        // QLDVehiclePositionService.FeedCache.
+        async let stopSequencesTask = QLDVehiclePositionService.shared.stopSequencesByTrip(rail: false)
 
         let tripUpdates = await tripUpdatesTask
         let rawAlerts = await alertsTask
+        let stopSequences = await stopSequencesTask
 
         let stopDepartureMap = buildDepartureBoard(
             scheduled: scheduledDepartures,
             tripUpdates: tripUpdates,
-            nowSeconds: nowSeconds
+            nowSeconds: nowSeconds,
+            stopSequences: stopSequences
         )
 
         let userLocation = CLLocation(latitude: latitude, longitude: longitude)
@@ -310,7 +320,8 @@ nonisolated final class BusService: BusDataProviding {
     private func buildDepartureBoard(
         scheduled: [GTFSDatabase.ScheduledDeparture],
         tripUpdates: [String: GTFSRTTripUpdate],
-        nowSeconds: Int
+        nowSeconds: Int,
+        stopSequences: [String: Int] = [:]
     ) -> [String: [BusDeparture]] {
         var result: [String: [BusDeparture]] = [:]
 
@@ -383,7 +394,17 @@ nonisolated final class BusService: BusDataProviding {
                 delaySeconds: delaySeconds,
                 minutesAway: minutesAway,
                 status: status,
-                stopSequence: dep.stopSequence
+                stopSequence: dep.stopSequence,
+                platform: nil,
+                directionId: dep.directionId,
+                directionName: nil,
+                expressStopCount: 0,
+                isAtPlatform: false,
+                isRegional: false,
+                stopsAway: BusDeparture.stopsAway(
+                    toStopSequence: dep.stopSequence,
+                    vehicleSequence: stopSequences[dep.tripId]
+                )
             )
 
             result[dep.stopId, default: []].append(busDep)

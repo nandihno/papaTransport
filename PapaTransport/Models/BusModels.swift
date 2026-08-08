@@ -125,9 +125,29 @@ struct BusInfo: Identifiable {
     let alerts: [BusAlert]
     let localTimeAtFetch: String      // e.g. "2:22 PM"
     let locationAvailable: Bool
+
+    /// Live vehicles serving this board.
+    ///
+    /// Victoria only. PTV attaches vehicle positions to the departures response
+    /// the board already fetches, so they arrive with the board rather than
+    /// from a separate feed — which also means the set is scoped to runs
+    /// serving these stops, not everything in the viewport.
+    ///
+    /// Queensland leaves this empty: TransLink publishes a separate
+    /// network-wide VehiclePositions feed, which `QLDVehiclePositionService`
+    /// fetches and filters by viewport instead.
+    ///
+    /// `var` with a default so the 30-odd existing construction sites, none of
+    /// which have vehicles to supply, stay untouched.
+    var liveVehicles: [LiveVehicle] = []
 }
 
 // MARK: - Nearby Bus Stop
+
+nonisolated enum DepartureDataAvailability: Equatable, Sendable {
+    case available
+    case unavailable
+}
 
 struct NearbyBusStop: Identifiable {
     let id: String                    // stop_id
@@ -137,6 +157,7 @@ struct NearbyBusStop: Identifiable {
     let longitude: Double
     let distanceMeters: Int
     let departures: [BusDeparture]
+    var departureDataAvailability: DepartureDataAvailability = .available
 }
 
 // MARK: - Bus Departure
@@ -154,6 +175,56 @@ struct BusDeparture: Identifiable {
     let minutesAway: Int              // minutes until departure
     let status: BusDepartureStatus
     let stopSequence: Int
+    /// PTV only — GTFS-only feeds (Queensland) have no platform field wired
+    /// through yet, though SEQ `stops.txt` does carry one for a future pass.
+    let platform: String?
+    /// Raw direction id. Queensland supplies this from `trips.direction_id`
+    /// (0/1, no semantics); PTV from the departure itself.
+    let directionId: Int?
+    /// A rider-facing direction label ("City", "Werribee"). PTV only — GTFS
+    /// has no equivalent table, so grouping falls back to `headsign` when this
+    /// is nil. See `BusDeparture.groupingLabel`.
+    let directionName: String?
+    /// Stops skipped on this run. PTV only; 0 for GTFS-only feeds.
+    let expressStopCount: Int
+    /// PTV only; false for GTFS-only feeds.
+    let isAtPlatform: Bool
+    /// A V/Line regional service rather than a metropolitan one. Victorian
+    /// train boards merge both, and the two are different PTV route types, so
+    /// the trip-detail lookup needs to know which one this came from.
+    let isRegional: Bool
+    /// How many stops the vehicle still has to make before reaching this one.
+    ///
+    /// Queensland only, derived from `current_stop_sequence` on the
+    /// VehiclePositions feed. Nil whenever no vehicle is reporting for this
+    /// trip, which is the normal case for a service that has not started yet.
+    var stopsAway: Int?
+}
+
+/// `nonisolated` because the Queensland services call `stopsAway` while
+/// building boards off the main actor — see the note on default main-actor
+/// isolation in CLAUDE.md.
+nonisolated extension BusDeparture {
+    /// Stops remaining between a reporting vehicle and this stop.
+    ///
+    /// Returns nil when no vehicle is reporting, and also when the vehicle has
+    /// already passed — a negative count would otherwise render as nonsense on
+    /// a departure the board is about to drop anyway.
+    static func stopsAway(toStopSequence stopSequence: Int, vehicleSequence: Int?) -> Int? {
+        guard let vehicleSequence else { return nil }
+        let remaining = stopSequence - vehicleSequence
+        return remaining >= 0 ? remaining : nil
+    }
+
+    /// Rider-facing phrasing for `stopsAway`.
+    var stopsAwayDescription: String? {
+        switch stopsAway {
+        case .none: nil
+        case 0: "At this stop"
+        case 1: "1 stop away"
+        case let count?: "\(count) stops away"
+        }
+    }
 }
 
 struct BusTripDetail: Identifiable {
@@ -171,6 +242,9 @@ struct BusTripDetail: Identifiable {
     let terminalPredictedTime: String?
     let stopsBeforeSelected: [BusTripStopDetail]
     let stopsFromSelected: [BusTripStopDetail]
+    /// What the vehicle physically is — "6 Car Xtrapolis · 142m". Victoria only;
+    /// TransLink publishes no equivalent.
+    let vehicleDescription: String?
 
     init(
         tripId: String,
@@ -185,7 +259,8 @@ struct BusTripDetail: Identifiable {
         terminalScheduledTime: String?,
         terminalPredictedTime: String?,
         stopsBeforeSelected: [BusTripStopDetail] = [],
-        stopsFromSelected: [BusTripStopDetail]
+        stopsFromSelected: [BusTripStopDetail],
+        vehicleDescription: String? = nil
     ) {
         self.id = tripId
         self.tripId = tripId
@@ -201,6 +276,7 @@ struct BusTripDetail: Identifiable {
         self.terminalPredictedTime = terminalPredictedTime
         self.stopsBeforeSelected = stopsBeforeSelected
         self.stopsFromSelected = stopsFromSelected
+        self.vehicleDescription = vehicleDescription
     }
 }
 
@@ -300,7 +376,13 @@ extension BusInfo {
                             delaySeconds: 0,
                             minutesAway: i * 10 + 5,
                             status: .noData,
-                            stopSequence: 0
+                            stopSequence: 0,
+                            platform: nil,
+                            directionId: nil,
+                            directionName: nil,
+                            expressStopCount: 0,
+                            isAtPlatform: false,
+                            isRegional: false
                         )
                     }
                 )

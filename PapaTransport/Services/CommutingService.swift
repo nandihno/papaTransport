@@ -8,19 +8,13 @@ final class CommutingService {
 
     func fetchSnapshot(
         trainLineName: String,
-        homeStation: String,
-        cityStation: String,
         transportRegion: TransportRegion,
         includeTrain: Bool,
         includeBus: Bool
     ) async -> CommutingSnapshot {
         async let trainTask: TrainInfo? = {
             guard includeTrain, transportRegion == .victorian else { return nil }
-            return await fetchTrainInfo(
-                lineName: trainLineName,
-                homeStation: homeStation,
-                cityStation: cityStation
-            )
+            return await fetchTrainInfo(lineName: trainLineName)
         }()
 
         async let busTask: BusInfo? = {
@@ -35,24 +29,16 @@ final class CommutingService {
         )
     }
 
-    private func fetchTrainInfo(
-        lineName: String,
-        homeStation: String,
-        cityStation: String
-    ) async -> TrainInfo {
+    private func fetchTrainInfo(lineName: String) async -> TrainInfo {
         guard !lineName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .placeholder(lineName: lineName, homeStation: homeStation, cityStation: cityStation)
+            return .placeholder(lineName: lineName)
         }
 
         do {
-            return try await TrainService.shared.fetchTrainInfo(
-                lineName: lineName,
-                homeStation: homeStation,
-                cityStation: cityStation
-            )
+            return try await TrainService.shared.fetchTrainInfo(lineName: lineName)
         } catch {
             print("⚠️ TrainService failed (\(error.localizedDescription)); using placeholder train data.")
-            return .placeholder(lineName: lineName, homeStation: homeStation, cityStation: cityStation)
+            return .placeholder(lineName: lineName)
         }
     }
 

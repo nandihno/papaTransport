@@ -1,5 +1,10 @@
 import Foundation
 
+/// Victorian train *line status* — alerts, planned works, service state.
+///
+/// Deliberately carries no departures: those come from `PTVBoardService`, which
+/// supplies scheduled/estimated times, platform and direction in one request.
+/// See UIRevampPlan.md Phase 2 §2.1.
 struct TrainInfo: Identifiable {
     let id = UUID()
     let lineName: String
@@ -7,12 +12,6 @@ struct TrainInfo: Identifiable {
     let serviceStatusMessage: String
     let alerts: [TrainServiceAlert]
     let plannedWorks: [TrainPlannedWork]
-    let homeStationName: String
-    let cityStationName: String
-    let homeStationDepartures: [TrainDeparture]
-    let homeStationAllDepartures: [TrainDeparture]
-    let cityStationDepartures: [TrainDeparture]
-    let cityStationAllDepartures: [TrainDeparture]
     let melbourneTimeAtFetch: String
 }
 
@@ -33,18 +32,6 @@ struct TrainPlannedWork: Identifiable {
     let affectedStations: [String]
 }
 
-struct TrainDeparture: Identifiable {
-    let id = UUID()
-    let station: String
-    let isToCity: Bool
-    let scheduledTimeStr: String
-    let estimatedArrivalStr: String
-    let estimatedDepartureStr: String
-    let estimatedDepartureSeconds: Int
-    let platform: String
-    let estimatedPlatform: String
-}
-
 struct CommutingSnapshot {
     let trainInfo: TrainInfo?
     let busInfo: BusInfo?
@@ -52,46 +39,15 @@ struct CommutingSnapshot {
 }
 
 extension TrainInfo {
-    static func placeholder(
-        lineName: String,
-        homeStation: String,
-        cityStation: String
-    ) -> TrainInfo {
-        let now = TrainService.secondsSinceMidnight()
-        let resolvedLineName = lineName.isEmpty ? "Your train line" : lineName
-        let resolvedHomeStation = homeStation.isEmpty ? "Home station" : homeStation
-        let resolvedCityStation = cityStation.isEmpty ? "City station" : cityStation
-
-        func departures(startingAt base: Int) -> [TrainDeparture] {
-            (0..<4).map { index in
-                let time = TrainService.secondsToTimeString(base + index * 600)
-                return TrainDeparture(
-                    station: "",
-                    isToCity: true,
-                    scheduledTimeStr: time,
-                    estimatedArrivalStr: time,
-                    estimatedDepartureStr: time,
-                    estimatedDepartureSeconds: base + index * 600,
-                    platform: "1",
-                    estimatedPlatform: "1"
-                )
-            }
-        }
-
-        return TrainInfo(
-            lineName: resolvedLineName,
+    static func placeholder(lineName: String) -> TrainInfo {
+        TrainInfo(
+            lineName: lineName.isEmpty ? "Your train line" : lineName,
             serviceIsGood: true,
             serviceStatusMessage: lineName.isEmpty
                 ? "Set your Victorian train line in Settings."
                 : "Live service status will appear here.",
             alerts: [],
             plannedWorks: [],
-            homeStationName: resolvedHomeStation,
-            cityStationName: resolvedCityStation,
-            homeStationDepartures: departures(startingAt: now + 300),
-            homeStationAllDepartures: departures(startingAt: now + 300),
-            cityStationDepartures: departures(startingAt: now + 600),
-            cityStationAllDepartures: departures(startingAt: now + 600),
             melbourneTimeAtFetch: "--:-- --"
         )
     }

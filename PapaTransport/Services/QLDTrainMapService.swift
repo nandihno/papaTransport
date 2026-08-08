@@ -91,6 +91,8 @@ nonisolated final class QLDTrainMapService: BusDataProviding {
 
         async let tripUpdatesTask = fetchTripUpdates()
         async let railAlertsTask = fetchRailAlerts()
+        // Shares a cached fetch with the map's vehicle pins.
+        async let stopSequencesTask = QLDVehiclePositionService.shared.stopSequencesByTrip(rail: true)
         let scheduledDepartures = try await GTFSDatabase.shared.trainDepartures(
             forStopIds: allFavouriteStopIds,
             afterSeconds: nowSeconds,
@@ -98,10 +100,12 @@ nonisolated final class QLDTrainMapService: BusDataProviding {
         )
         let tripUpdates = await tripUpdatesTask
         let railAlerts = await railAlertsTask
+        let stopSequences = await stopSequencesTask
         let stopDepartureMap = buildDepartureBoard(
             scheduled: scheduledDepartures,
             tripUpdates: tripUpdates,
-            nowSeconds: nowSeconds
+            nowSeconds: nowSeconds,
+            stopSequences: stopSequences
         )
 
         let userLocation = CLLocation(latitude: latitude, longitude: longitude)
@@ -278,7 +282,8 @@ nonisolated final class QLDTrainMapService: BusDataProviding {
     private func buildDepartureBoard(
         scheduled: [GTFSDatabase.ScheduledDeparture],
         tripUpdates: [String: GTFSRTTripUpdate],
-        nowSeconds: Int
+        nowSeconds: Int,
+        stopSequences: [String: Int] = [:]
     ) -> [String: [BusDeparture]] {
         var result: [String: [BusDeparture]] = [:]
 
@@ -359,7 +364,17 @@ nonisolated final class QLDTrainMapService: BusDataProviding {
                 delaySeconds: delaySeconds,
                 minutesAway: minutesAway,
                 status: status,
-                stopSequence: departure.stopSequence
+                stopSequence: departure.stopSequence,
+                platform: nil,
+                directionId: departure.directionId,
+                directionName: nil,
+                expressStopCount: 0,
+                isAtPlatform: false,
+                isRegional: false,
+                stopsAway: BusDeparture.stopsAway(
+                    toStopSequence: departure.stopSequence,
+                    vehicleSequence: stopSequences[departure.tripId]
+                )
             )
 
             result[departure.stopId, default: []].append(busDeparture)
@@ -403,6 +418,8 @@ nonisolated final class QLDTrainMapService: BusDataProviding {
         // Run DB query and GTFS-RT network fetches concurrently
         async let tripUpdatesTask = fetchTripUpdates()
         async let railAlertsTask = fetchRailAlerts()
+        // Shares a cached fetch with the map's vehicle pins.
+        async let stopSequencesTask = QLDVehiclePositionService.shared.stopSequencesByTrip(rail: true)
         let scheduledDepartures: [GTFSDatabase.ScheduledDeparture]
         if allStopIds.isEmpty {
             scheduledDepartures = []
@@ -415,11 +432,13 @@ nonisolated final class QLDTrainMapService: BusDataProviding {
         }
         let tripUpdates = await tripUpdatesTask
         let railAlerts = await railAlertsTask
+        let stopSequences = await stopSequencesTask
 
         let stopDepartureMap = buildDepartureBoard(
             scheduled: scheduledDepartures,
             tripUpdates: tripUpdates,
-            nowSeconds: nowSeconds
+            nowSeconds: nowSeconds,
+            stopSequences: stopSequences
         )
 
         let nearbyStops: [NearbyBusStop] = nearbyRaw.compactMap { stop, distance in

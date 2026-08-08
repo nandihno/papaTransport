@@ -88,6 +88,10 @@ nonisolated struct GTFSRTVehiclePosition {
     /// Metres per second.
     let speed: Double?
     let stopId: String
+    /// Sequence of the stop the vehicle is at or heading to. TransLink
+    /// populates this on 100% of vehicles, which is what makes "N stops away"
+    /// possible without any extra data.
+    let currentStopSequence: UInt32
     let currentStatus: GTFSRTVehicleStopStatus
     let timestamp: UInt64
 
@@ -135,6 +139,7 @@ nonisolated struct GTFSRTVehiclePosition {
         }
 
         self.stopId = fields.first(7)?.asString ?? ""
+        self.currentStopSequence = UInt32(fields.first(3)?.asUInt64 ?? 0)
         self.currentStatus = GTFSRTVehicleStopStatus(
             rawValue: Int(fields.first(4)?.asUInt64 ?? 2)) ?? .inTransitTo
         self.timestamp = fields.first(5)?.asUInt64 ?? 0

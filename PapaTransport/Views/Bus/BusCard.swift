@@ -16,9 +16,14 @@ struct BusCard: View {
     let emptyStateMessageOverride: String?
 
     private let selectedStopIDBinding: Binding<String?>?
+    /// When the host owns trip presentation, this card raises the request
+    /// instead of presenting its own sheet. Two `.sheet` modifiers in one
+    /// subtree — the card's and the map explorer's — competed for presentation
+    /// and left the map's own controls unable to open theirs.
+    private let selectedTripBinding: Binding<BusTripRequest?>?
 
     @Environment(\.themePalette) private var palette
-    @State private var selectedTripRequest: BusTripRequest?
+    @State private var localSelectedTripRequest: BusTripRequest?
     @State private var localSelectedStopID: String?
     @State private var expandedStopIDs: Set<String> = []
 
@@ -26,6 +31,7 @@ struct BusCard: View {
         title: String = "Departures",
         busInfo: BusInfo,
         selectedStopID: Binding<String?>? = nil,
+        selectedTrip: Binding<BusTripRequest?>? = nil,
         showsNearby: Bool = true,
         showsFavourites: Bool = true,
         emptyStateMessageOverride: String? = nil
@@ -33,9 +39,18 @@ struct BusCard: View {
         self.title = title
         self.busInfo = busInfo
         self.selectedStopIDBinding = selectedStopID
+        self.selectedTripBinding = selectedTrip
         self.showsNearby = showsNearby
         self.showsFavourites = showsFavourites
         self.emptyStateMessageOverride = emptyStateMessageOverride
+    }
+
+    private func selectTrip(_ request: BusTripRequest) {
+        if let selectedTripBinding {
+            selectedTripBinding.wrappedValue = request
+        } else {
+            localSelectedTripRequest = request
+        }
     }
 
     private var selectedStopID: String? {
@@ -52,6 +67,16 @@ struct BusCard: View {
 
     private var displayedFavouriteStops: [NearbyBusStop] {
         showsFavourites ? busInfo.favouriteStops : []
+    }
+
+    private var hasUnavailableDepartureData: Bool {
+        (displayedNearbyStops + displayedFavouriteStops).contains {
+            $0.departureDataAvailability == .unavailable
+        }
+    }
+
+    private var hasDisplayedDepartures: Bool {
+        (displayedNearbyStops + displayedFavouriteStops).contains { !$0.departures.isEmpty }
     }
 
     private var isExternallyControlled: Bool {
@@ -101,10 +126,19 @@ struct BusCard: View {
                     .background(palette.surfaceRaised, in: Capsule())
             }
 
-            if busInfo.locationAvailable {
+            if busInfo.locationAvailable && hasDisplayedDepartures {
                 Label("Tap a departure to see where that trip continues.", systemImage: "list.bullet.rectangle.portrait")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
+            }
+
+            if busInfo.locationAvailable && hasUnavailableDepartureData {
+                Label(
+                    "Cached stop locations are shown. Live departures are unavailable until a connection returns.",
+                    systemImage: "wifi.slash"
+                )
+                .font(.caption)
+                .foregroundStyle(palette.warning)
             }
 
             if !busInfo.locationAvailable {
@@ -142,11 +176,11 @@ struct BusCard: View {
                                 setSelectedStopID(stop.id)
                             }
                         ) { departure in
-                            selectedTripRequest = BusTripRequest(
+                            selectTrip(BusTripRequest(
                                 provider: busInfo.provider,
                                 stopId: stop.id,
                                 departure: departure
-                            )
+                            ))
                         }
                     }
                 }
@@ -172,45 +206,19 @@ struct BusCard: View {
                                 setSelectedStopID(stop.id)
                             }
                         ) { departure in
-                            selectedTripRequest = BusTripRequest(
+                            selectTrip(BusTripRequest(
                                 provider: busInfo.provider,
                                 stopId: stop.id,
                                 departure: departure
-                            )
+                            ))
                         }
                     }
                 }
             }
         }
-        .padding(16)
-        .background {
-            ZStack(alignment: .top) {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(palette.cardBackground)
-
-                // Thin accent gradient bar along top edge
-                LinearGradient(
-                    colors: [palette.accentStrong.opacity(0.40), palette.accent.opacity(0.0)],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(height: 2)
-                .clipShape(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: 24,
-                        bottomLeadingRadius: 0,
-                        bottomTrailingRadius: 0,
-                        topTrailingRadius: 24,
-                        style: .continuous
-                    )
-                )
-            }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(palette.accentStrong.opacity(0.14), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        // Flat, no card chrome: this only ever renders inside the bus/tram
+        // sheet, which is already the container. See UIRevampPlan.md §2.5.
+        .padding(.horizontal, 4)
         .onAppear {
             synchronizeSelectionWithCurrentStops()
         }
@@ -221,7 +229,7 @@ struct BusCard: View {
         .onChange(of: allDisplayedStopIDs) { _, _ in
             synchronizeSelectionWithCurrentStops()
         }
-        .sheet(item: $selectedTripRequest) { request in
+        .sheet(item: selectedTripBinding == nil ? $localSelectedTripRequest : .constant(nil)) { request in
             BusTripDetailSheet(request: request)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
@@ -375,154 +383,47 @@ struct BusStopSection: View {
             if isExpanded {
                 Divider()
 
-                // Departure rows
-                ForEach(stop.departures) { departure in
-                    BusDepartureRow(
-                        departure: departure,
-                        isInteractive: isTripDetailEnabled
-                    ) {
-                        onSelectDeparture(departure)
+                if stop.departureDataAvailability == .unavailable {
+                    Label(
+                        "Departures unavailable. Check your connection and refresh.",
+                        systemImage: "wifi.slash"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(palette.warning)
+                } else {
+                    // Departure rows
+                    ForEach(stop.departures) { departure in
+                        DepartureRow(
+                            departure: departure,
+                            isInteractive: isTripDetailEnabled
+                        ) {
+                            onSelectDeparture(departure)
+                        }
                     }
                 }
             }
         }
-        .padding(12)
-        .background(isSelected ? palette.surfaceRaised.opacity(0.92) : Color.clear)
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(
-                    isSelected ? palette.accentStrong.opacity(0.55) : palette.textTertiary.opacity(0.10),
-                    lineWidth: isSelected ? 1.5 : 1
-                )
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(
-            color: isSelected ? palette.accent.opacity(0.18) : .clear,
-            radius: 8,
-            y: 3
+        // Selected stops get a tint; unselected ones sit flat with a hairline,
+        // matching TrainStationSection. See UIRevampPlan.md §2.5.
+        .padding(.vertical, 12)
+        .padding(.horizontal, 4)
+        .background(
+            isSelected ? palette.surfaceRaised.opacity(0.55) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
         )
+        .overlay(alignment: .bottom) {
+            if !isSelected {
+                Rectangle()
+                    .fill(palette.textTertiary.opacity(0.14))
+                    .frame(height: 1)
+            }
+        }
     }
 }
 
-// MARK: - Bus Departure Row
-
-struct BusDepartureRow: View {
-    let departure: BusDeparture
-    let isInteractive: Bool
-    let onTap: () -> Void
-    @Environment(\.themePalette) private var palette
-
-    var body: some View {
-        Group {
-            if isInteractive {
-                Button(action: onTap) {
-                    rowContent
-                }
-                .buttonStyle(.plain)
-            } else {
-                rowContent
-            }
-        }
-        .accessibilityAddTraits(isInteractive ? .isButton : [])
-        .accessibilityHint(isInteractive ? "Shows the stops remaining on this trip." : "")
-    }
-
-    private var rowContent: some View {
-        HStack(spacing: 0) {
-            // Status accent strip on leading edge
-            Capsule()
-                .fill(statusColor)
-                .frame(width: 3)
-                .padding(.vertical, 4)
-                .padding(.trailing, 10)
-
-            // Route badge
-            Text(departure.routeShortName)
-                .font(.transitLabel.monospacedDigit())
-                .foregroundStyle(palette.buttonForeground)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .frame(minWidth: 44)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-                .background(palette.buttonBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .shadow(color: palette.accent.opacity(0.30), radius: 5, y: 2)
-
-            // Headsign / route name
-            VStack(alignment: .leading, spacing: 2) {
-                Text(departure.headsign ?? departure.routeLongName)
-                    .font(.transitBody)
-                    .foregroundStyle(palette.textPrimary)
-                    .lineLimit(1)
-                timeDetailLine
-            }
-            .padding(.leading, 10)
-
-            Spacer()
-
-            // Minutes away + status badge
-            VStack(alignment: .trailing, spacing: 4) {
-                HStack(alignment: .lastTextBaseline, spacing: 3) {
-                    let duration = departure.minutesAway.durationComponents
-                    Text(duration.value)
-                        .font(.transitDisplay.monospacedDigit())
-                        .foregroundStyle(palette.textPrimary)
-                    if !duration.unit.isEmpty {
-                        Text(duration.unit)
-                            .font(.transitBadge)
-                            .foregroundStyle(palette.textSecondary)
-                    }
-                }
-
-                Text(departure.status.rawValue)
-                    .font(.transitBadge)
-                    .foregroundStyle(statusColor)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(statusColor.opacity(0.14), in: Capsule())
-            }
-
-            if isInteractive {
-                Image(systemName: "chevron.right")
-                    .font(.caption2.bold())
-                    .foregroundStyle(palette.textTertiary)
-                    .padding(.leading, 8)
-            }
-        }
-        .padding(.vertical, 8)
-    }
-
-    @ViewBuilder
-    private var timeDetailLine: some View {
-        HStack(spacing: 4) {
-            Text("Sched \(departure.scheduledTime)")
-                .font(.caption2)
-                .foregroundStyle(palette.textSecondary)
-
-            if let predicted = departure.predictedTime {
-                Text("Pred \(predicted)")
-                    .font(.caption2)
-                    .foregroundStyle(statusColor)
-            }
-
-            if departure.delaySeconds != 0 && departure.status != .noData {
-                let delayStr = departure.delaySeconds > 0
-                    ? "+\(departure.delaySeconds)s"
-                    : "\(departure.delaySeconds)s"
-                Text("Delay: \(delayStr)")
-                    .font(.caption2)
-                    .foregroundStyle(statusColor)
-            }
-        }
-    }
-
-    private var statusColor: Color {
-        palette.color(for: departure.status)
-    }
-}
-
-private struct BusTripRequest: Identifiable {
+/// Internal rather than private: the map explorer opens this sheet too,
+/// when a live vehicle pin is tapped.
+struct BusTripRequest: Identifiable {
     let provider: BusProvider
     let stopId: String
     let departure: BusDeparture
@@ -530,7 +431,7 @@ private struct BusTripRequest: Identifiable {
     var id: String { "\(provider.rawValue):\(departure.tripId):\(stopId):\(departure.stopSequence)" }
 }
 
-private struct BusTripDetailSheet: View {
+struct BusTripDetailSheet: View {
     let request: BusTripRequest
 
     @Environment(\.dismiss) private var dismiss
@@ -803,7 +704,7 @@ private struct BusStopMiniMap: View {
                 .foregroundStyle(palette.textPrimary)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
-                .background(.ultraThinMaterial, in: Capsule())
+                .glassEffect(.regular, in: .capsule)
                 .padding(10)
         }
         .frame(maxWidth: .infinity, minHeight: 126, maxHeight: 126)

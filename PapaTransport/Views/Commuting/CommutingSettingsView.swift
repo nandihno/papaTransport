@@ -4,13 +4,14 @@ import UIKit
 
 struct CommutingSettingsView: View {
     @Binding var trainLineName: String
-    @AppStorage("homeStation") private var homeStation = ""
-    @AppStorage("cityStation") private var cityStation = "Flinders Street"
     @AppStorage("transportMode") private var transportRegionRaw = TransportRegion.victorian.rawValue
     @AppStorage("victorianShowTrainCard") private var victorianShowTrainCard = true
     @AppStorage("victorianShowBusCard") private var victorianShowBusCard = false
     @State private var ptvCheckInProgress = false
     @State private var ptvCheckMessage = ""
+    @State private var ptvStopCacheStatistics = PTVStopCacheStatistics.empty
+    @State private var ptvStopCacheClearInProgress = false
+    @State private var ptvStopCacheMessage = ""
     @AppStorage(TrainStatusNotificationService.enabledKey) private var trainStatusNotificationsEnabled = false
     @AppStorage(TrainStatusNotificationService.selectedWeekdaysKey) private var trainStatusNotificationWeekdayMask = TrainStatusNotificationService.defaultWeekdayMask
     @AppStorage(TrainStatusNotificationService.timesKey) private var trainStatusNotificationTimesRaw = TrainStatusNotificationService.encodeTimes([TrainStatusNotificationService.defaultTimeSeconds])
@@ -85,6 +86,7 @@ struct CommutingSettingsView: View {
             .task {
                 await refreshBusState()
                 await refreshNotificationAuthorizationStatus()
+                await refreshPTVStopCacheStatistics()
             }
             .onChange(of: transportRegionRaw) { _, _ in
                 Task { await refreshBusState() }
@@ -205,6 +207,9 @@ struct CommutingSettingsView: View {
         qldHomeStationLon = 0
     }
 
+    /// Only the line is configurable. Home and city station pickers used to live
+    /// here, feeding a departure list that no longer exists — the Trains tab now
+    /// shows stations from the visible map area instead. See UIRevampPlan.md.
     private var victorianTrainSection: some View {
         Section {
             NavigationLink {
@@ -215,35 +220,10 @@ struct CommutingSettingsView: View {
                         .foregroundStyle(trainLineName.isEmpty ? .secondary : .primary)
                 }
             }
-
-            NavigationLink {
-                StationPickerView(title: "Home Station", selectedStation: $homeStation)
-            } label: {
-                LabeledContent("Home Station") {
-                    Text(homeStation.isEmpty ? "Not set" : homeStation)
-                        .foregroundStyle(homeStation.isEmpty ? .secondary : .primary)
-                }
-            }
-            .disabled(trainLineName.isEmpty)
-
-            NavigationLink {
-                StationPickerView(title: "City Station", selectedStation: $cityStation)
-            } label: {
-                LabeledContent("City Station") {
-                    Text(cityStation.isEmpty ? "Not set" : cityStation)
-                        .foregroundStyle(cityStation.isEmpty ? .secondary : .primary)
-                }
-            }
-            .disabled(trainLineName.isEmpty)
         } header: {
             Text("Victorian Train")
         } footer: {
-            if trainLineName.isEmpty {
-                Text("Select a train line first to enable station selection.")
-                    .foregroundStyle(.orange)
-            } else {
-                Text("Choose the line plus your home and city stations for the train card.")
-            }
+            Text("Sets which line's status, alerts and planned works appear on the Trains tab. Departures come from the stations in view on the map.")
         }
     }
 
@@ -559,6 +539,42 @@ struct CommutingSettingsView: View {
                     }
                 }
                 .disabled(ptvCheckInProgress)
+
+                LabeledContent("Cached Stops") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("\(ptvStopCacheStatistics.stopCount)")
+                        if let oldestSweepDate = ptvStopCacheStatistics.oldestSweepDate {
+                            Text(oldestSweepDate, style: .relative)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Not used yet")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .multilineTextAlignment(.trailing)
+                }
+
+                Button(role: .destructive) {
+                    Task { await clearPTVStopCache() }
+                } label: {
+                    if ptvStopCacheClearInProgress {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("Clearing…")
+                        }
+                    } else {
+                        Label("Clear Cached Stop Data", systemImage: "trash")
+                    }
+                }
+                .disabled(ptvStopCacheClearInProgress || ptvStopCacheStatistics.stopCount == 0)
+
+                if !ptvStopCacheMessage.isEmpty {
+                    Text(ptvStopCacheMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 Label(
                     "No PTV credentials are embedded in this build.",
@@ -585,6 +601,22 @@ struct CommutingSettingsView: View {
             ptvCheckMessage = error.localizedDescription
         }
         ptvCheckInProgress = false
+    }
+
+    @MainActor
+    private func refreshPTVStopCacheStatistics() async {
+        ptvStopCacheStatistics = await PTVStopCache.shared.statistics()
+    }
+
+    @MainActor
+    private func clearPTVStopCache() async {
+        ptvStopCacheClearInProgress = true
+        ptvStopCacheMessage = ""
+        await PTVStopCache.shared.clear()
+        await PTVAPIClient.shared.clearCache()
+        await refreshPTVStopCacheStatistics()
+        ptvStopCacheMessage = "Cached stop data was cleared."
+        ptvStopCacheClearInProgress = false
     }
 
     private var busManagementSection: some View {

@@ -28,8 +28,6 @@ private enum CommutingLoadState {
 
 struct CommutingView: View {
     @AppStorage("trainLineName") private var trainLineName = ""
-    @AppStorage("homeStation") private var homeStation = ""
-    @AppStorage("cityStation") private var cityStation = "Flinders Street"
     @AppStorage("transportMode") private var transportRegionRaw = TransportRegion.victorian.rawValue
     @AppStorage("victorianShowTrainCard") private var victorianShowTrainCard = true
     @AppStorage("victorianShowBusCard") private var victorianShowBusCard = false
@@ -68,7 +66,7 @@ struct CommutingView: View {
     }
 
     private var placeholderTrainInfo: TrainInfo {
-        .placeholder(lineName: trainLineName, homeStation: homeStation, cityStation: cityStation)
+        .placeholder(lineName: trainLineName)
     }
 
     private var placeholderBusInfo: BusInfo {
@@ -184,6 +182,10 @@ struct CommutingView: View {
                         Label("Plan", systemImage: "map.fill")
                     }
             }
+            // Reclaims vertical space while reading a departure list. The map
+            // tabs are the whole screen, so the tab bar is the only chrome
+            // competing with content.
+            .tabBarMinimizeBehavior(.onScrollDown)
             .onChange(of: selectedTab) { _, _ in
                 fetchData()
             }
@@ -401,8 +403,6 @@ struct CommutingView: View {
 
         let snapshot = await CommutingService.shared.fetchSnapshot(
             trainLineName: trainLineName,
-            homeStation: homeStation,
-            cityStation: cityStation,
             transportRegion: transportRegion,
             includeTrain: transportRegion == .victorian,
             includeBus: shouldShowBusCard

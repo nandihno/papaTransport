@@ -172,6 +172,28 @@ nonisolated struct PTVStop: Decodable, Identifiable {
 
     var id: Int { stopId }
 
+    init(
+        stopId: Int,
+        stopName: String,
+        stopLandmark: String?,
+        routeType: Int,
+        latitude: Double,
+        longitude: Double,
+        distanceMeters: Double? = nil
+    ) {
+        self.stopId = stopId
+        self.stopName = stopName
+        stopSuburb = nil
+        self.stopLandmark = stopLandmark
+        self.routeType = routeType
+        self.latitude = latitude
+        self.longitude = longitude
+        self.distanceMeters = distanceMeters
+        stopSequence = nil
+        disruptionIds = []
+        routes = []
+    }
+
     private enum CodingKeys: String, CodingKey {
         case stopId = "stop_id"
         case stopName = "stop_name"
@@ -265,6 +287,11 @@ nonisolated struct PTVRun: Decodable, Identifiable {
     let destinationName: String
     let status: String
     let expressStopCount: Int
+    /// Present only when the request asked for `expand=VehiclePosition`, and
+    /// even then only for roughly half of runs — see `PTVVehiclePosition`.
+    let vehiclePosition: PTVVehiclePosition?
+    /// Present only when the request asked for `expand=VehicleDescriptor`.
+    let vehicleDescriptor: PTVVehicleDescriptor?
 
     var id: String { runRef }
 
@@ -280,6 +307,8 @@ nonisolated struct PTVRun: Decodable, Identifiable {
         case destinationName = "destination_name"
         case status
         case expressStopCount = "express_stop_count"
+        case vehiclePosition = "vehicle_position"
+        case vehicleDescriptor = "vehicle_descriptor"
     }
 
     init(from decoder: Decoder) throws {
@@ -292,6 +321,123 @@ nonisolated struct PTVRun: Decodable, Identifiable {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         status           = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? ""
         expressStopCount = (try? c.decodeIfPresent(Int.self, forKey: .expressStopCount)) ?? 0
+        vehiclePosition  = (try? c.decodeIfPresent(PTVVehiclePosition.self, forKey: .vehiclePosition)) ?? nil
+        vehicleDescriptor = (try? c.decodeIfPresent(PTVVehicleDescriptor.self, forKey: .vehicleDescriptor)) ?? nil
+    }
+}
+
+/// What the vehicle physically is — "6 Car Xtrapolis", "6 Car Comeng".
+///
+/// `air_conditioned` and `low_floor` exist in the schema but come back null on
+/// every sample checked, so they are not decoded.
+nonisolated struct PTVVehicleDescriptor: Decodable {
+    /// e.g. "6 Car Xtrapolis"
+    let description: String?
+    /// e.g. "Metro Trains Melbourne"
+    let operatorName: String?
+    /// Metres.
+    let length: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case description
+        case operatorName = "operator"
+        case length
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        description = (try? c.decodeIfPresent(String.self, forKey: .description))??
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        operatorName = (try? c.decodeIfPresent(String.self, forKey: .operatorName))??
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // PTV sends length as a number on trains and a string on some coaches.
+        if let n = try? c.decodeIfPresent(Int.self, forKey: .length) {
+            length = n
+        } else if let s = try? c.decodeIfPresent(String.self, forKey: .length) {
+            length = Int(s)
+        } else {
+            length = nil
+        }
+    }
+
+    /// One-line summary for the trip sheet, or nil when there is nothing useful.
+    var displaySummary: String? {
+        guard let description, !description.isEmpty else { return nil }
+        guard let length, length > 0 else { return description }
+        return "\(description) · \(length)m"
+    }
+}
+
+/// A live vehicle fix attached to a run.
+///
+/// Measured 2026-07-31 against the live API: roughly **49% of train runs and
+/// 57% of bus runs** carry one; **trams carry none at all** (0 of 55 runs across
+/// four separate corridors), so the tram board does not request it.
+///
+/// Unlike TransLink's GTFS-RT feed, PTV populates `bearing`.
+nonisolated struct PTVVehiclePosition: Decodable {
+    let latitude: Double
+    let longitude: Double
+    /// Degrees clockwise from true north.
+    let bearing: Double?
+    /// When this fix goes stale. PTV's own expiry is short (a couple of
+    /// minutes); a fix past it is dropped rather than drawn in a wrong place.
+    let expiryTime: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case latitude, longitude, bearing
+        case expiryTime = "expiry_time"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+
+        // PTV sends these as JSON numbers, but has been observed sending
+        // strings for some suppliers — accept either rather than losing the fix.
+        func number(_ key: CodingKeys) -> Double? {
+            if let d = try? c.decodeIfPresent(Double.self, forKey: key) { return d }
+            if let s = try? c.decodeIfPresent(String.self, forKey: key) { return Double(s) }
+            return nil
+        }
+
+        guard let lat = number(.latitude), let lon = number(.longitude) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .latitude, in: c, debugDescription: "missing coordinates"
+            )
+        }
+        latitude = lat
+        longitude = lon
+        bearing = number(.bearing)
+
+        if let raw = try? c.decodeIfPresent(String.self, forKey: .expiryTime) {
+            expiryTime = PTVVehiclePosition.expiryFormatter.date(from: raw)
+                ?? ISO8601DateFormatter().date(from: raw)
+        } else {
+            expiryTime = nil
+        }
+    }
+
+    /// `expiry_time` arrives without a zone suffix ("2026-07-31T09:39:56") but
+    /// is UTC, matching the `datetime_utc` field beside it.
+    private static let expiryFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    func isFresh(asOf now: Date = Date()) -> Bool {
+        guard let expiryTime else { return true }
+        // A little slack: the board refreshes on a 60s cycle, so discarding on
+        // the exact second would blink vehicles out between ticks.
+        return now < expiryTime.addingTimeInterval(90)
+    }
+
+    var isValidCoordinate: Bool {
+        latitude != 0 && longitude != 0
+            && latitude >= -90 && latitude <= 90
+            && longitude >= -180 && longitude <= 180
     }
 }
 

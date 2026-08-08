@@ -1,6 +1,6 @@
 # PTV Timetable API — Integration Plan (Victorian Bus + Train)
 
-Status: **Complete — Victoria is served entirely by PTV; the Victorian databases are gone** · Last updated: 2026-07-26
+Status: **Complete — Victoria is served entirely by PTV; the Victorian databases are gone; static stop caching is implemented** · Last updated: 2026-08-07
 
 This document covers introducing the official [PTV Timetable API v3](https://www.vic.gov.au/public-transport-timetable-api)
 as a data source for Victorian bus and Victorian train, alongside (and potentially
@@ -479,3 +479,148 @@ against them rather than guessed.
 - Extra fields available if wanted: `stop_landmark`, `route_service_status`,
   `geopath` (route geometry), and `interchange` (feeder/distributor run links
   for trains).
+
+---
+
+## 9. Caching static stop data — investigation (2026-08-07)
+
+**Status: implemented.** Numbers below were measured against
+the live API on 2026-08-07, not estimated.
+
+### The question
+
+Stop identity — id, name, coordinates, landmark — does not change. The app
+re-downloads it constantly. Can it be cached to disk, with a weekly refresh and
+a Settings control to clear it?
+
+Yes, and it is worth doing. Scope is **Victoria only**: Queensland resolves
+stops from `gtfs_seq.sqlite3`, which is already local.
+
+### What is static and what is not
+
+| Data | Endpoint | Rate of change | Measured size |
+|---|---|---|---|
+| Stop identity | `/v3/stops/location` | ~never for an existing stop | **1.0 KB/stop** (bus), **10 KB/stop** (train) |
+| Routes serving a stop | same, inline (§8) | with timetable changes | included above |
+| Route + direction names | `expand=Route`/`Direction` | quarterly | 2.7 KB per board response |
+| Departures + runs | `/v3/departures` | seconds | **207 KB** for one Flinders Street board |
+
+Two consequences fall out of the measurements:
+
+- **`PTVStop.routes` is decoded and never read.** Nothing consumes it — the
+  fields the app actually uses total **138 bytes per stop**. A V/Line stop
+  therefore ships ~70× more bytes than it keeps, because route type 3 stops
+  carry long inline route lists. Note this contradicts nothing in §8: the inline
+  routes *are* free of an extra request, they are simply unused today.
+- **`expand=Run` is 135 KB of that 207 KB response** (109 KB of `runs` for 227
+  departures). Reducing it is a separate exercise from caching, and a larger
+  lever on total bandwidth.
+
+### Why `PTVAPIClient`'s cache does not cover this
+
+`PTVAPIClient` already caches (25 s default, 120 s for stop searches), but three
+properties make it near-useless for stop data:
+
+1. **Keyed on the exact request path.** `stopsNear` embeds raw lat/lon, so a
+   one-metre pan is a total miss. `BusStopMapView` re-queries on every
+   `onMapCameraChange`, and `stopsInRegion` fans a wide region into four
+   quadrant requests.
+2. **In-memory only.** It dies with the process; every cold start re-downloads
+   stops the user has already seen many times.
+3. **120 s TTL** on data stable for months.
+
+The structural point: it is a **response** cache, and these responses are radius
+queries that are never byte-identical twice.
+
+**`URLCache` is not an alternative.** PTV returns `cache-control: no-cache`
+(and `expires: -1`) on every response — verified on both `/v3/stops/location`
+and `/v3/departures`. The S3 `website_data.json` feed sends `no-cache` too. A
+bespoke cache is the only option.
+
+### Recommended shape
+
+Cache **entities plus coverage**, not responses. A `PTVStopCache` actor holding
+two tables:
+
+- **stops** — `stopId → (name, landmark, latitude, longitude, routeType)`.
+  138 bytes each; identity does not expire.
+- **tiles** — a quantised lat/lon cell (~0.005°, roughly 500 m) per route-type
+  set → `lastSweptAt`. A region query answers from local storage and hits the
+  network only for cells that are unswept or stale.
+
+`stopsInRegion` and `nearbyStops` both become "read local, backfill the gaps".
+
+**Storage:** a JSON file in Application Support, alongside the installed GTFS
+database and likewise excluded from iCloud backup. UserDefaults is the wrong
+home once this passes a few hundred records — it is read wholesale into memory
+at launch. SQLite is available but is overkill for a flat id→record map.
+
+**Sizing:** a heavy user might touch a few thousand stops, well under 1 MB.
+Melbourne's entire bus network at 138 bytes/stop is ~4 MB, so unbounded growth
+is not a realistic risk.
+
+`PTVStopIDResolver` is the working precedent: it already persists a
+favourite→PTV-id map, never expires identity, and exposes `clearCache(for:)`.
+
+### Traps
+
+- **`stop_distance` is per-query.** It must not be persisted; distance is
+  recomputed locally against the reference coordinate.
+- **Negative results are the dangerous ones.** A tile swept and found empty must
+  *not* hold for a week — a new stop would be hidden with no error, just an
+  empty board. Give empty tiles ~1 h and populated tiles the full week.
+- **Favourites store GTFS ids deliberately** (see `PTVStopIDResolver`), so the
+  stop cache is a separate layer from the id map. Clearing one must not silently
+  invalidate the other.
+- **`/v3/stops/location` caps at 30 stops per response** regardless of radius
+  (measured; already worked around by `subdivideAboveMeters`). Tile size must
+  stay below the density at which a cell hits that cap, or sweeps silently
+  truncate.
+
+### What it buys
+
+| Path | Effect |
+|---|---|
+| Favourites stop picker | Dozens of requests per browsing session → ~zero after the first sweep. Pure static payload; the biggest win. |
+| Board refresh | Saves 1 of ~17 requests per cycle. Small — the 207 KB departures calls dominate and are genuinely uncacheable. |
+| Cold start / poor signal | Stop discovery works offline; the board goes straight to departures. |
+
+This does **not** meaningfully reduce steady-state traffic. It removes repeated
+downloads of unchanging data and makes stop discovery survive a cold start.
+
+### Settings
+
+A "Clear Cached Stop Data" row belongs in the existing PTV Timetable API
+section of `CommutingSettingsView`, beside "Test Connection": show cached stop
+count and age, and clear the tile table plus `PTVAPIClient.clearCache()`.
+
+### Implementation delivered (2026-08-07)
+
+- `PTVStopCache` is an actor backed by
+  `Application Support/Timetables/stop-cache.json`,
+  with the file excluded from iCloud backup. `PTVCachedStop` and the cache
+  transport records are explicitly `nonisolated` and `Sendable`, so JSON work
+  stays on the cache actor rather than inheriting the target's default
+  `MainActor` isolation.
+- `PTVBoardService` and `PTVStopIDResolver` read cached entities, fetch only
+  missing or stale coverage, merge new identity records, and recompute
+  `stop_distance` locally. The one-hour empty-tile and one-week populated-tile
+  TTLs are enforced by the cache.
+- Wide region responses are still allowed to use the existing PTV result-cap
+  workaround, but are not marked as complete coverage when their radius could
+  exceed the measured 30-stop cap. This avoids turning a truncated response
+  into a false offline result.
+- Commuting Settings now shows the cached stop count and oldest sweep age and
+  clears both the persistent stop cache and the short-lived `PTVAPIClient`
+  response cache. The favourite-to-PTV id map remains separate and is not
+  cleared by this control.
+- Cached stop and station identities remain visible when every live departure
+  request for that stop fails, including after relaunch in Flight Mode. The
+  board marks those records as departure-unavailable and the UI explains that
+  departures require a connection. A successful response with no upcoming
+  departures keeps the previous behavior and does not create an empty pin.
+
+### Also worth caching
+
+`TrainLinePickerView` refetches `website_data.json` (60 KB) every time the line
+picker opens, for a line list that effectively never changes.

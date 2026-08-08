@@ -2,12 +2,6 @@ import CoreLocation
 import MapKit
 import SwiftUI
 
-private enum TrainSheetDetent: CaseIterable {
-    case collapsed
-    case medium
-    case expanded
-}
-
 struct TrainMapExplorerView: View {
     let initialBusInfo: BusInfo?
     let trainInfo: TrainInfo
@@ -17,7 +11,6 @@ struct TrainMapExplorerView: View {
     let statusMessage: String?
     let statusDetail: String?
 
-    @AppStorage("trainNearestStationsMinimized") private var isNearestStationsMinimized = false
     @AppStorage("trainPlannedWorksMinimized") private var isPlannedWorksMinimized = false
     @Environment(\.themePalette) private var palette
 
@@ -33,11 +26,7 @@ struct TrainMapExplorerView: View {
     @State private var isLoading = false
     @State private var currentRegion: MKCoordinateRegion?
     @State private var errorMessage: String?
-    @State private var userCoordinateDescription = "Visible area on the map"
     @State private var showAllPlannedWorks = false
-    @State private var sheetDetent: TrainSheetDetent = .medium
-    @State private var sheetDragTranslation: CGFloat = 0
-    @State private var isDraggingSheet = false
     @State private var liveVehicles: [LiveVehicle] = []
 
     private let provider: BusProvider
@@ -46,7 +35,7 @@ struct TrainMapExplorerView: View {
     init(
         provider: BusProvider = .victorianTrainPTV,
         initialBusInfo: BusInfo? = nil,
-        trainInfo: TrainInfo = .placeholder(lineName: "", homeStation: "", cityStation: ""),
+        trainInfo: TrainInfo = .placeholder(lineName: ""),
         onOpenSettings: @escaping () -> Void = {},
         onRefresh: @escaping () async -> Void = {},
         autoRefreshEnabled: Bool = true,
@@ -84,12 +73,6 @@ struct TrainMapExplorerView: View {
         )
     }
 
-    private var nearbyStationsLabel: String {
-        let count = nearbyInfo.nearbyStops.count
-        let noun = count == 1 ? "station" : "stations"
-        return "\(count) \(noun) in view"
-    }
-
     private var displayedPlannedWorks: [TrainPlannedWork] {
         showAllPlannedWorks ? trainInfo.plannedWorks : Array(trainInfo.plannedWorks.prefix(4))
     }
@@ -120,44 +103,20 @@ struct TrainMapExplorerView: View {
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .top) {
-                mapCard
-                    .ignoresSafeArea()
-
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0.44),
-                        Color.black.opacity(0.14),
-                        Color.clear
-                    ],
-                    startPoint: .top,
-                    endPoint: .center
-                )
-                .ignoresSafeArea(edges: .top)
-                .allowsHitTesting(false)
-
-                LinearGradient(
-                    colors: [
-                        Color.clear,
-                        palette.backgroundBase.opacity(0.12),
-                        palette.backgroundBase.opacity(0.58)
-                    ],
-                    startPoint: .center,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea(edges: .bottom)
-                .allowsHitTesting(false)
-
-                headerOverlay(topInset: proxy.safeAreaInsets.top)
-
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    bottomSheet(proxy: proxy)
-                }
-            }
+        MapSheetScaffold(
+            title: "Train Stations in View",
+            summary: mapSummary,
+            isLoading: isLoading,
+            onOpenSettings: onOpenSettings,
+            onRecenter: recenterOnUser,
+            onRefresh: { await refreshAll() }
+        ) {
+            mapCard
+        } headerContent: {
+            headerPill
+        } sheetContent: {
+            sheetSections
         }
-        .background(palette.backgroundBase)
         .task {
             await bootstrap()
         }
@@ -172,6 +131,58 @@ struct TrainMapExplorerView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+    }
+
+    /// Contents of the floating pill over the map. Only map interaction state —
+    /// the station count lives on the sheet's grip handle.
+    @ViewBuilder
+    private var headerPill: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(isZoomedOutTooFar
+                 ? "Zoom in (within ~50 km) to load train stations."
+                 : "Pan the map to load train stations in the visible area.")
+                .font(.transitCaption)
+                .foregroundStyle(palette.textSecondary)
+
+            if let errorMessage, !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.transitCaption)
+                    .foregroundStyle(palette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sheetSections: some View {
+        GTFSFeedWarningBanner(provider: provider)
+
+        if let statusMessage, !statusMessage.isEmpty {
+            MapInfoBanner(
+                title: statusMessage,
+                detail: statusDetail,
+                icon: "clock.badge.checkmark"
+            )
+        }
+
+        if !trainInfo.lineName.isEmpty && provider != .queenslandTrainTransLink {
+            TrainStatusSummaryCard(train: trainInfo)
+
+            if !trainInfo.plannedWorks.isEmpty {
+                TrainPlannedWorksBoard(
+                    works: displayedPlannedWorks,
+                    totalCount: trainInfo.plannedWorks.count,
+                    showsAll: $showAllPlannedWorks,
+                    isMinimized: $isPlannedWorksMinimized
+                )
+            }
+        }
+
+        if provider == .queenslandTrainTransLink {
+            QLDTrainNetworkStatusCard(alerts: nearbyInfo.alerts)
+        }
+
+        nearestStationsList
     }
 
     private var mapCard: some View {
@@ -190,9 +201,12 @@ struct TrainMapExplorerView: View {
             }
 
             // Untagged so they stay out of the stop-selection binding.
-            ForEach(liveVehicles) { vehicle in
-                Annotation("", coordinate: vehicle.coordinate) {
-                    LiveVehicleMapPin(vehicle: vehicle)
+            ForEach(vehicleAnnotations) { annotation in
+                Annotation("", coordinate: annotation.vehicle.coordinate) {
+                    LiveVehicleMapPin(
+                        vehicle: annotation.vehicle,
+                        onTap: annotation.isTappable ? { openTrip(annotation) } : nil
+                    )
                 }
                 .annotationTitles(.hidden)
             }
@@ -216,292 +230,54 @@ struct TrainMapExplorerView: View {
         }
     }
 
+    /// Flat, not a `CardContainer`. The sheet is already the container — nesting
+    /// a card inside it produced four competing edge treatments and inset the
+    /// text by ~60pt. See UIRevampPlan.md Phase 2 §2.5.
+    ///
+    /// The title and count that used to head this card now live only on the
+    /// sheet's grip handle, directly above.
     @ViewBuilder
-    private func headerOverlay(topInset: CGFloat) -> some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        Label(mapSummary, systemImage: "tram.fill")
-                            .font(.transitBadge)
-                            .foregroundStyle(.primary)
-
-                        if isLoading {
-                            ProgressView()
-                                .scaleEffect(0.82)
-                        }
-                    }
-
-                    Text(isZoomedOutTooFar
-                         ? "Zoom in (within ~50 km) to load train stations."
-                         : "Pan the map to load train stations in the visible area.")
-                        .font(.transitCaption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.primary.opacity(0.10), lineWidth: 1)
-                }
-
-                if let errorMessage, !errorMessage.isEmpty {
-                    Text(errorMessage)
-                        .font(.transitCaption)
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                }
-            }
-
-            Spacer()
-
-            VStack(spacing: 12) {
-                overlayControlButton(systemName: "gearshape.fill", action: onOpenSettings)
-                overlayControlButton(systemName: "location.fill", action: recenterOnUser)
-            }
-        }
-        .padding(.top, max(topInset, 12))
-        .padding(.horizontal, 18)
-    }
-
-    @ViewBuilder
-    private func mapInfoBanner(title: String, detail: String?, icon: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .foregroundStyle(palette.accentText)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.transitLabel)
-                    .foregroundStyle(palette.textPrimary)
-                if let detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(.transitCaption)
-                        .foregroundStyle(palette.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer()
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func overlayControlButton(systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 18, weight: .bold))
-                .foregroundStyle(.primary)
-                .frame(width: 54, height: 54)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(Color.primary.opacity(0.10), lineWidth: 1)
-                }
-        }
-        .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func bottomSheet(proxy: GeometryProxy) -> some View {
-        let safeBottom = max(proxy.safeAreaInsets.bottom, 12)
-        let height = currentSheetHeight(in: proxy)
-
-        VStack(spacing: 0) {
-            gripHandle
-                .contentShape(Rectangle())
-                .gesture(sheetDragGesture(in: proxy))
-
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 16) {
-                    GTFSFeedWarningBanner(provider: provider)
-
-                    if let statusMessage, !statusMessage.isEmpty {
-                        mapInfoBanner(
-                            title: statusMessage,
-                            detail: statusDetail,
-                            icon: "clock.badge.checkmark"
-                        )
-                    }
-
-                    if !trainInfo.lineName.isEmpty && provider != .queenslandTrainTransLink {
-                        TrainStatusSummaryCard(train: trainInfo)
-
-                        if !trainInfo.plannedWorks.isEmpty {
-                            TrainPlannedWorksBoard(
-                                works: displayedPlannedWorks,
-                                totalCount: trainInfo.plannedWorks.count,
-                                showsAll: $showAllPlannedWorks,
-                                isMinimized: $isPlannedWorksMinimized
-                            )
-                        }
-                    }
-
-                    if provider == .queenslandTrainTransLink {
-                        QLDTrainNetworkStatusCard(alerts: nearbyInfo.alerts)
-                    }
-
-                    nearestStationsCard
-                }
-                .padding(.horizontal, 10)
-                .padding(.bottom, safeBottom + 10)
-            }
-            .refreshable {
-                await refreshAll()
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: height, alignment: .top)
-        .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .fill(.ultraThinMaterial)
-
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                palette.surfaceOverlay.opacity(0.55),
-                                palette.backgroundBase.opacity(0.72)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
+    private var nearestStationsList: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if !nearbyInfo.locationAvailable {
+                Label(
+                    "Location unavailable. Enable Location Services to show train stations from the visible map area.",
+                    systemImage: "location.slash.fill"
+                )
+                .font(.transitCaption)
+                .foregroundStyle(palette.warning)
+            } else if let errorMessage, !errorMessage.isEmpty {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.transitCaption)
+                    .foregroundStyle(palette.warning)
+            } else if displayedNearbyStops.isEmpty && displayedFavouriteStops.isEmpty {
+                Label(
+                    "No train stations were found in the visible map area, and no favourites currently have departures.",
+                    systemImage: "tram.fill"
+                )
+                .font(.transitCaption)
+                .foregroundStyle(palette.textSecondary)
+            } else {
+                if !displayedNearbyStops.isEmpty {
+                    stationListSection(
+                        title: "In View",
+                        systemImage: "location.fill",
+                        accentColor: palette.textSecondary,
+                        stops: displayedNearbyStops
                     )
-            }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .strokeBorder(palette.textTertiary.opacity(0.18), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
-        .padding(.horizontal, 8)
-        .padding(.bottom, 8)
-        .shadow(color: Color.black.opacity(0.14), radius: 24, y: -6)
-        .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: sheetDetent)
-        .transaction { transaction in
-            if isDraggingSheet {
-                transaction.animation = nil
-            }
-        }
-    }
-
-    private var gripHandle: some View {
-        VStack(spacing: 10) {
-            Capsule()
-                .fill(palette.textTertiary.opacity(0.5))
-                .frame(width: 40, height: 4)
-                .padding(.top, 10)
-
-            HStack(alignment: .center) {
-                Text("Train Stations in View")
-                    .font(.transitBody)
-                    .foregroundStyle(palette.accentText)
-
-                Spacer()
-
-                Text(mapSummary)
-                    .font(.transitBadge)
-                    .foregroundStyle(palette.textSecondary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(palette.surfaceRaised.opacity(0.8), in: Capsule())
-            }
-            .padding(.horizontal, 18)
-
-            Divider()
-                .padding(.horizontal, 18)
-        }
-    }
-
-    @ViewBuilder
-    private var nearestStationsCard: some View {
-        CardContainer {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Label("Train Stations in View", systemImage: "location.circle.fill")
-                            .font(.transitHeadline)
-                            .foregroundStyle(palette.accentText)
-
-                        Text(userCoordinateDescription)
-                            .font(.transitCaption)
-                            .foregroundStyle(palette.textSecondary)
-                    }
-
-                    Spacer()
-
-                    HStack(spacing: 8) {
-                        if isLoading {
-                            ProgressView()
-                                .scaleEffect(0.9)
-                        } else {
-                            Text(nearbyStationsLabel)
-                                .font(.transitBadge)
-                                .foregroundStyle(palette.textSecondary)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(palette.surfaceRaised, in: Capsule())
-                        }
-
-                        minimizeButton(isMinimized: $isNearestStationsMinimized)
-                    }
                 }
 
-                if !isNearestStationsMinimized {
-                    if !nearbyInfo.locationAvailable {
-                        Label(
-                            "Location unavailable. Enable Location Services to show train stations from the visible map area.",
-                            systemImage: "location.slash.fill"
-                        )
-                        .font(.subheadline)
-                        .foregroundStyle(palette.warning)
-                    } else if let errorMessage, !errorMessage.isEmpty {
-                        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                            .font(.subheadline)
-                            .foregroundStyle(palette.warning)
-                    } else if displayedNearbyStops.isEmpty && displayedFavouriteStops.isEmpty {
-                        Label(
-                            "No train stations were found in the visible map area, and no favourites currently have departures.",
-                            systemImage: "tram.fill"
-                        )
-                        .font(.subheadline)
-                        .foregroundStyle(palette.textSecondary)
-                    } else {
-                        Text("Tap a station to expand live departures. Tap a departure to see the stops remaining on that service.")
-                            .font(.caption)
-                            .foregroundStyle(palette.textSecondary)
-
-                        if !displayedNearbyStops.isEmpty {
-                            stationListSection(
-                                title: "In View",
-                                systemImage: "location.fill",
-                                accentColor: palette.textSecondary,
-                                stops: displayedNearbyStops
-                            )
-                        }
-
-                        if !displayedFavouriteStops.isEmpty {
-                            if !displayedNearbyStops.isEmpty {
-                                Divider()
-                            }
-
-                            stationListSection(
-                                title: "Favourites",
-                                systemImage: "star.fill",
-                                accentColor: palette.accent,
-                                stops: displayedFavouriteStops
-                            )
-                        }
+                if !displayedFavouriteStops.isEmpty {
+                    if !displayedNearbyStops.isEmpty {
+                        Divider()
                     }
+
+                    stationListSection(
+                        title: "Favourites",
+                        systemImage: "star.fill",
+                        accentColor: palette.accentText,
+                        stops: displayedFavouriteStops
+                    )
                 }
             }
         }
@@ -521,7 +297,6 @@ struct TrainMapExplorerView: View {
         ForEach(stops) { stop in
             TrainStationSection(
                 stop: stop,
-                provider: provider,
                 isExpanded: selectedStopID == stop.id
             ) {
                 toggleSelection(for: stop.id)
@@ -584,8 +359,15 @@ struct TrainMapExplorerView: View {
 
     /// Live vehicles come from TransLink's GTFS-realtime VehiclePositions feed,
     /// which only covers Queensland.
+    /// The two regions supply vehicles by different routes.
+    ///
+    /// Queensland has a separate network-wide GTFS-RT feed, fetched here and
+    /// filtered to the viewport. Victoria attaches positions to the departures
+    /// response, so they arrive already on `nearbyInfo` and only cover runs
+    /// serving the stops in view — nothing extra to fetch.
     private func refreshLiveVehicles() async {
-        guard provider == .queenslandTrainTransLink, let currentRegion else {
+        guard provider == .queenslandTrainTransLink else { return }
+        guard let currentRegion else {
             if !liveVehicles.isEmpty { liveVehicles = [] }
             return
         }
@@ -597,6 +379,31 @@ struct TrainMapExplorerView: View {
         withAnimation(.easeInOut(duration: 0.3)) {
             liveVehicles = vehicles
         }
+    }
+
+    /// Queensland's viewport feed, or Victoria's board-attached positions.
+    private var displayedVehicles: [LiveVehicle] {
+        provider == .queenslandTrainTransLink ? liveVehicles : nearbyInfo.liveVehicles
+    }
+
+    /// Vehicles paired with the board departure each is working.
+    ///
+    /// Not every vehicle resolves: Queensland's feed is network-wide, so it
+    /// includes trips that call at no station in view. Those pins stay
+    /// non-interactive rather than giving a tap that does nothing.
+    private var vehicleAnnotations: [VehicleAnnotation] {
+        displayedVehicles.annotations(
+            matching: displayedNearbyStops + displayedFavouriteStops
+        )
+    }
+
+    private func openTrip(_ annotation: VehicleAnnotation) {
+        guard let stopId = annotation.stopId, let departure = annotation.departure else { return }
+        selectedTripRequest = TrainTripRequest(
+            stopId: stopId,
+            departure: departure,
+            provider: provider
+        )
     }
 
     private func bootstrap() async {
@@ -624,7 +431,6 @@ struct TrainMapExplorerView: View {
             let location = try await LocationManager().currentLocation()
             let coordinate = location.coordinate
             userCoordinate = coordinate
-            userCoordinateDescription = "Visible map area • distances from this device"
 
             let initialRegion = MKCoordinateRegion(
                 center: coordinate,
@@ -702,7 +508,6 @@ struct TrainMapExplorerView: View {
                 nearbyInfo = updatedInfo
                 favouriteStops = favouriteInfo.favouriteStops
                 lastQueriedRegion = region
-                userCoordinateDescription = "Visible map area • distances from this device"
                 synchronizeSelection(
                     with: updatedInfo.nearbyStops.map(\.id) + favouriteInfo.favouriteStops.map(\.id)
                 )
@@ -754,58 +559,6 @@ struct TrainMapExplorerView: View {
         }
 
         selectedStopID = stopIDs.first
-    }
-
-    private func currentSheetHeight(in proxy: GeometryProxy) -> CGFloat {
-        let heights = sheetHeights(in: proxy)
-        let baseHeight = heights[sheetDetent] ?? heights[.medium] ?? 360
-        let adjustedHeight = baseHeight - sheetDragTranslation
-        return min(max(adjustedHeight, heights[.collapsed] ?? adjustedHeight), heights[.expanded] ?? adjustedHeight)
-    }
-
-    private func sheetHeights(in proxy: GeometryProxy) -> [TrainSheetDetent: CGFloat] {
-        let safeTop = max(proxy.safeAreaInsets.top, 12)
-        let safeBottom = max(proxy.safeAreaInsets.bottom, 12)
-        let availableHeight = proxy.size.height - safeTop
-        let collapsed = max(104, safeBottom + 92)
-        let expanded = min(availableHeight - 18, proxy.size.height * 0.88)
-        let medium = min(max(360, proxy.size.height * 0.47), expanded - 80)
-
-        return [
-            .collapsed: collapsed,
-            .medium: max(collapsed + 60, medium),
-            .expanded: max(medium + 80, expanded)
-        ]
-    }
-
-    private func sheetDragGesture(in proxy: GeometryProxy) -> some Gesture {
-        DragGesture(minimumDistance: 8, coordinateSpace: .global)
-            .onChanged { value in
-                isDraggingSheet = true
-                sheetDragTranslation = value.translation.height
-            }
-            .onEnded { value in
-                let heights = sheetHeights(in: proxy)
-                let baseHeight = heights[sheetDetent] ?? heights[.medium] ?? 360
-                let projectedHeight = min(
-                    max(baseHeight - value.predictedEndTranslation.height, heights[.collapsed] ?? baseHeight),
-                    heights[.expanded] ?? baseHeight
-                )
-
-                if let nearestDetent = TrainSheetDetent.allCases.min(by: {
-                    abs((heights[$0] ?? projectedHeight) - projectedHeight) <
-                    abs((heights[$1] ?? projectedHeight) - projectedHeight)
-                }) {
-                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.84)) {
-                        sheetDetent = nearestDetent
-                        sheetDragTranslation = 0
-                        isDraggingSheet = false
-                    }
-                } else {
-                    sheetDragTranslation = 0
-                    isDraggingSheet = false
-                }
-            }
     }
 
     private func referenceCoordinate() async throws -> CLLocationCoordinate2D {
@@ -1023,66 +776,17 @@ private struct TrainPlannedWorksBoard: View {
     }
 }
 
-private extension TrainMapExplorerView {
-    @ViewBuilder
-    func minimizeButton(isMinimized: Binding<Bool>) -> some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isMinimized.wrappedValue.toggle()
-            }
-        } label: {
-            Image(systemName: "chevron.down")
-                .font(.caption.bold())
-                .foregroundStyle(palette.textSecondary)
-                .frame(width: 28, height: 28)
-                .background(palette.surfaceRaised, in: Circle())
-                .rotationEffect(.degrees(isMinimized.wrappedValue ? -90 : 0))
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 private struct TrainStationSection: View {
     let stop: NearbyBusStop
-    let provider: BusProvider
     let isExpanded: Bool
     let onToggleExpanded: () -> Void
     let onSelectDeparture: (BusDeparture) -> Void
 
     @Environment(\.themePalette) private var palette
-    @State private var expandedLineNames: Set<String> = []
-    @State private var liveDepartures: [TrainDeparture] = []
-    @State private var liveDeparturesError: String?
-    @State private var isLoadingLive = false
-    @State private var hasLoadedLive = false
+    @State private var expandedDirectionLabels: Set<String> = []
 
-    private var windowedDepartures: [BusDeparture] {
-        stop.departures
-            .sorted { lhs, rhs in
-                let lhsLine = lineName(for: lhs)
-                let rhsLine = lineName(for: rhs)
-
-                let comparison = lhsLine.localizedCaseInsensitiveCompare(rhsLine)
-                if comparison == .orderedSame {
-                    return lhs.scheduledSeconds < rhs.scheduledSeconds
-                }
-                return comparison == .orderedAscending
-            }
-    }
-
-    private var lineGroups: [TrainLineGroup] {
-        let grouped = Dictionary(grouping: windowedDepartures, by: lineName(for:))
-
-        return grouped
-            .map { lineName, departures in
-                TrainLineGroup(
-                    lineName: lineName,
-                    departures: departures.sorted { $0.scheduledSeconds < $1.scheduledSeconds }
-                )
-            }
-            .sorted {
-                $0.lineName.localizedCaseInsensitiveCompare($1.lineName) == .orderedAscending
-            }
+    private var directionGroups: [DepartureDirectionGroup] {
+        stop.departures.groupedByDirection()
     }
 
     var body: some View {
@@ -1124,27 +828,27 @@ private struct TrainStationSection: View {
             if isExpanded {
                 Divider()
 
-                if provider == .victorianTrainPTV {
-                    LiveMetroDeparturesBlock(
-                        departures: liveDepartures,
-                        isLoading: isLoadingLive,
-                        errorMessage: liveDeparturesError,
-                        hasLoaded: hasLoadedLive
-                    )
-                }
-
-                if lineGroups.isEmpty {
-                    Text("No departures found for this station within \("next 2 hours").")
+                if directionGroups.isEmpty {
+                    if stop.departureDataAvailability == .unavailable {
+                        Label(
+                            "Cached station location shown. Departures are unavailable until a connection returns.",
+                            systemImage: "wifi.slash"
+                        )
                         .font(.caption)
-                        .foregroundStyle(palette.textSecondary)
-                        .italic()
+                        .foregroundStyle(palette.warning)
+                    } else {
+                        Text("No departures found for this station within \("next 2 hours").")
+                            .font(.caption)
+                            .foregroundStyle(palette.textSecondary)
+                            .italic()
+                    }
                 } else {
-                    ForEach(lineGroups) { group in
-                        TrainLineGroupSection(
+                    ForEach(directionGroups) { group in
+                        DepartureGroupSection(
                             group: group,
-                            isExpanded: expandedLineNames.contains(group.id)
+                            isExpanded: expandedDirectionLabels.contains(group.id)
                         ) {
-                            toggleLine(group.id)
+                            toggleDirection(group.id)
                         } onSelectDeparture: { departure in
                             onSelectDeparture(departure)
                         }
@@ -1152,354 +856,37 @@ private struct TrainStationSection: View {
                 }
             }
         }
-        .padding(14)
-        .background(isExpanded ? palette.surfaceRaised.opacity(0.92) : Color.clear)
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(
-                    isExpanded ? palette.accentStrong.opacity(0.36) : palette.textTertiary.opacity(0.08),
-                    lineWidth: 1
-                )
+        // Selected rows get a tint; unselected ones sit flat on the sheet with
+        // only a hairline separating them. Previously every row carried its own
+        // border, which read as boxes inside boxes inside the sheet.
+        .padding(.vertical, 12)
+        .padding(.horizontal, 4)
+        .background(
+            isExpanded ? palette.surfaceRaised.opacity(0.55) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .overlay(alignment: .bottom) {
+            if !isExpanded {
+                Rectangle()
+                    .fill(palette.textTertiary.opacity(0.14))
+                    .frame(height: 1)
+            }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onChange(of: isExpanded) { _, expanded in
             if !expanded {
-                expandedLineNames.removeAll()
+                expandedDirectionLabels.removeAll()
             }
         }
-        .task(id: isExpanded) {
-            await loadLiveDeparturesIfNeeded()
-        }
     }
 
-    private func loadLiveDeparturesIfNeeded() async {
-        guard isExpanded, provider == .victorianTrainPTV, !hasLoadedLive else { return }
-        isLoadingLive = true
-        liveDeparturesError = nil
-        defer { isLoadingLive = false }
-
-        do {
-            let results = try await TrainService.shared.fetchLiveDepartures(station: stop.stopName)
-            liveDepartures = results
-            hasLoadedLive = true
-        } catch {
-            liveDeparturesError = error.localizedDescription
-        }
-    }
-
-    private func lineName(for departure: BusDeparture) -> String {
-        let value = departure.routeShortName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? "Train" : value
-    }
-
-    private func toggleLine(_ lineName: String) {
+    private func toggleDirection(_ label: String) {
         withAnimation(.easeInOut(duration: 0.2)) {
-            if expandedLineNames.contains(lineName) {
-                expandedLineNames.remove(lineName)
+            if expandedDirectionLabels.contains(label) {
+                expandedDirectionLabels.remove(label)
             } else {
-                expandedLineNames.insert(lineName)
+                expandedDirectionLabels.insert(label)
             }
         }
-    }
-}
-
-private struct LiveMetroDeparturesBlock: View {
-    let departures: [TrainDeparture]
-    let isLoading: Bool
-    let errorMessage: String?
-    let hasLoaded: Bool
-
-    @Environment(\.themePalette) private var palette
-
-    private var inbound:  [TrainDeparture] { departures.filter {  $0.isToCity } }
-    private var outbound: [TrainDeparture] { departures.filter { !$0.isToCity } }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "bolt.horizontal.circle.fill")
-                    .foregroundStyle(palette.accentText)
-                Text("Live ETA / ETD")
-                    .font(.transitLabel)
-                    .foregroundStyle(palette.textPrimary)
-                Text("MetroTrains")
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(palette.surfaceRaised, in: Capsule())
-                    .foregroundStyle(palette.textSecondary)
-                Spacer()
-                if isLoading {
-                    ProgressView().scaleEffect(0.7)
-                }
-            }
-
-            if let errorMessage, !errorMessage.isEmpty {
-                Text(errorMessage)
-                    .font(.caption2)
-                    .foregroundStyle(palette.warning)
-            } else if !isLoading && hasLoaded && departures.isEmpty {
-                Text("No live MetroTrains departures for this station.")
-                    .font(.caption2)
-                    .foregroundStyle(palette.textTertiary)
-                    .italic()
-            } else if !departures.isEmpty {
-                directionBlock(label: "Inbound → City",
-                               symbol: "arrow.up.circle.fill",
-                               color: palette.info,
-                               rows: inbound)
-                directionBlock(label: "Outbound",
-                               symbol: "arrow.down.circle.fill",
-                               color: palette.accent,
-                               rows: outbound)
-            }
-        }
-        .padding(10)
-        .background(palette.surfaceRaised.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func directionBlock(label: String, symbol: String, color: Color, rows: [TrainDeparture]) -> some View {
-        if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Image(systemName: symbol).foregroundStyle(color)
-                    Text(label).foregroundStyle(color)
-                }
-                .font(.caption2.weight(.semibold))
-
-                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 3) {
-                    GridRow {
-                        Text("Time").gridColumnAlignment(.leading)
-                        Text("Plat").gridColumnAlignment(.center)
-                        Text("ETA").gridColumnAlignment(.leading)
-                        Text("ETD").gridColumnAlignment(.leading)
-                    }
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(palette.textTertiary)
-
-                    ForEach(rows) { dep in
-                        GridRow {
-                            Text(dep.scheduledTimeStr)
-                            Text(dep.estimatedPlatform.isEmpty ? dep.platform : dep.estimatedPlatform)
-                                .frame(maxWidth: .infinity, alignment: .center)
-                            Text(dep.estimatedArrivalStr)
-                            Text(dep.estimatedDepartureStr)
-                        }
-                        .font(.caption2)
-                        .foregroundStyle(palette.textSecondary)
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct TrainLineGroup: Identifiable {
-    let lineName: String
-    let departures: [BusDeparture]
-
-    var id: String { lineName }
-
-    var nextDeparture: BusDeparture? {
-        departures.first
-    }
-}
-
-private struct TrainLineGroupSection: View {
-    let group: TrainLineGroup
-    let isExpanded: Bool
-    let onToggleExpanded: () -> Void
-    let onSelectDeparture: (BusDeparture) -> Void
-
-    @Environment(\.themePalette) private var palette
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button(action: onToggleExpanded) {
-                HStack(spacing: 12) {
-                    Text(group.lineName)
-                        .font(.transitLabel)
-                        .foregroundStyle(Color.black.opacity(0.84))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
-                        .frame(minWidth: 68, maxWidth: 92)
-                        .background(palette.buttonBackground)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(group.nextDepartureTitle)
-                            .font(.transitBody)
-                            .foregroundStyle(palette.textPrimary)
-                            .lineLimit(1)
-
-                        Text(group.secondarySummary)
-                            .font(.transitCaption)
-                            .foregroundStyle(palette.textSecondary)
-                            .lineLimit(1)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    VStack(alignment: .trailing, spacing: 2) {
-                        if let nextDeparture = group.nextDeparture {
-                            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                                let duration = nextDeparture.minutesAway.durationComponents
-                                Text(duration.value)
-                                    .font(.transitDisplay.monospacedDigit())
-                                    .foregroundStyle(palette.textPrimary)
-                                if !duration.unit.isEmpty {
-                                    Text(duration.unit)
-                                        .font(.transitBadge)
-                                        .foregroundStyle(palette.textSecondary)
-                                }
-                            }
-                        }
-
-                        Text(group.departureCountLabel)
-                            .font(.transitBadge)
-                            .foregroundStyle(palette.textSecondary)
-                    }
-
-                    Image(systemName: "chevron.right")
-                        .font(.caption.bold())
-                        .foregroundStyle(palette.textTertiary)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                }
-            }
-            .buttonStyle(.plain)
-
-            if isExpanded {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(group.departures) { departure in
-                        TrainDepartureRow(departure: departure, showsRouteBadge: false) {
-                            onSelectDeparture(departure)
-                        }
-                    }
-                }
-                .padding(.leading, 8)
-            }
-        }
-    }
-}
-
-private extension TrainLineGroup {
-    var nextDepartureTitle: String {
-        guard let nextDeparture else { return lineName }
-        let value = (nextDeparture.headsign ?? nextDeparture.routeLongName)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? lineName : value
-    }
-
-    var secondarySummary: String {
-        guard let nextDeparture else { return "No scheduled services" }
-        let firstTime = "Next \(nextDeparture.scheduledTime)"
-        return departures.count == 1
-            ? "\(firstTime) • 1 service in \("next 2 hours")"
-            : "\(firstTime) • \(departures.count) services in \("next 2 hours")"
-    }
-
-    var departureCountLabel: String {
-        departures.count == 1 ? "1 service" : "\(departures.count) services"
-    }
-}
-
-private struct TrainDepartureRow: View {
-    let departure: BusDeparture
-    let showsRouteBadge: Bool
-    let onTap: () -> Void
-
-    @Environment(\.themePalette) private var palette
-
-    init(
-        departure: BusDeparture,
-        showsRouteBadge: Bool = true,
-        onTap: @escaping () -> Void
-    ) {
-        self.departure = departure
-        self.showsRouteBadge = showsRouteBadge
-        self.onTap = onTap
-    }
-
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 14) {
-                if showsRouteBadge {
-                    Text(routeBadgeText)
-                        .font(.transitLabel)
-                        .foregroundStyle(Color.black.opacity(0.84))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
-                        .frame(minWidth: 68, maxWidth: 92)
-                        .background(palette.buttonBackground)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(primaryTitle)
-                        .font(.transitBody)
-                        .foregroundStyle(palette.textPrimary)
-                        .lineLimit(1)
-
-                    HStack(spacing: 8) {
-                        Text("Sched \(departure.scheduledTime)")
-                            .font(.transitCaption)
-                            .foregroundStyle(palette.textSecondary)
-
-                        if let predictedTime = departure.predictedTime {
-                            Text("Pred \(predictedTime)")
-                                .font(.transitBadge)
-                                .foregroundStyle(statusColor)
-                        }
-                    }
-                }
-
-                Spacer(minLength: 8)
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        let duration = departure.minutesAway.durationComponents
-                        Text(duration.value)
-                            .font(.transitDisplay.monospacedDigit())
-                            .foregroundStyle(palette.textPrimary)
-                        if !duration.unit.isEmpty {
-                            Text(duration.unit)
-                                .font(.transitBadge)
-                                .foregroundStyle(palette.textSecondary)
-                        }
-                    }
-
-                    Text(departure.status.rawValue)
-                        .font(.transitBadge)
-                        .foregroundStyle(statusColor)
-                }
-
-                Image(systemName: "chevron.right")
-                    .font(.caption.bold())
-                    .foregroundStyle(palette.textTertiary)
-            }
-            .padding(.vertical, 2)
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint("Shows the stops remaining on this train service.")
-    }
-
-    private var routeBadgeText: String {
-        let value = departure.routeShortName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? "Train" : value
-    }
-
-    private var primaryTitle: String {
-        let value = (departure.headsign ?? departure.routeLongName).trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? "Service details unavailable" : value
-    }
-
-    private var statusColor: Color {
-        palette.color(for: departure.status)
     }
 }
 
@@ -1581,6 +968,15 @@ private struct TrainTripDetailSheet: View {
                         .font(.subheadline)
                         .foregroundStyle(palette.textSecondary)
                         .lineLimit(2)
+
+                    // Victoria only — PTV names the rolling stock, TransLink
+                    // publishes no equivalent.
+                    if let vehicle = tripDetail.vehicleDescription {
+                        Label(vehicle, systemImage: "train.side.front.car")
+                            .font(.transitBadge)
+                            .foregroundStyle(palette.textTertiary)
+                            .padding(.top, 2)
+                    }
                 }
             }
 
@@ -1715,7 +1111,7 @@ private struct TrainStationMapPin: View {
                     .lineLimit(1)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(.ultraThinMaterial, in: Capsule())
+                    .glassEffect(.regular, in: .capsule)
             }
         }
     }

@@ -7,7 +7,8 @@
 //  the UI is unchanged.
 //
 //  One instance per mode: PTV differs only by route_type between Victorian
-//  train and Victorian bus.
+//  train and Victorian bus. A mode may span more than one route type — the
+//  train board covers both metropolitan trains and V/Line.
 //
 //  Unlike the GTFS path — one batched SQL query for every stop at once — PTV
 //  requires a request per stop. The nearby-stop count is therefore capped and
@@ -22,8 +23,12 @@ final class PTVBoardService: TrainBoardProviding {
     /// Station boards show only the next 2 hours. The board groups by line and
     /// collapses each group, so a whole station's worth of departures costs a
     /// row per line rather than a row per train — hence the generous caps.
+    ///
+    /// Victorian train stations are served by two PTV route types: metropolitan
+    /// trains (0) and V/Line regional trains (3). A station board that showed
+    /// only the first would silently drop every country service calling there.
     static let victorianTrain = PTVBoardService(
-        routeType: .train,
+        routeTypes: [.train, .vline],
         provider: .victorianTrainPTV,
         nearbyRadiusMeters: 5_000,
         fallbackRadiusMeters: 5_000,
@@ -41,7 +46,7 @@ final class PTVBoardService: TrainBoardProviding {
     /// tighter than the train's: enough that every route serving the stop is
     /// represented, not so many that the list becomes a wall of times.
     static let victorianBus = PTVBoardService(
-        routeType: .bus,
+        routeTypes: [.bus],
         provider: .victorianPTV,
         nearbyRadiusMeters: 300,
         fallbackRadiusMeters: 800,
@@ -55,7 +60,7 @@ final class PTVBoardService: TrainBoardProviding {
     /// Tram stops sit closer together than bus stops, so a tighter default
     /// radius still finds plenty without wasting per-stop requests.
     static let victorianTram = PTVBoardService(
-        routeType: .tram,
+        routeTypes: [.tram],
         provider: .victorianTramPTV,
         nearbyRadiusMeters: 250,
         fallbackRadiusMeters: 600,
@@ -71,7 +76,14 @@ final class PTVBoardService: TrainBoardProviding {
 
     let provider: BusProvider
 
-    private let routeType: PTVRouteType
+    /// Every route type this board draws from. Departures are fetched once per
+    /// type and merged.
+    private let routeTypes: [PTVRouteType]
+
+    /// The type that identifies the mode — used where a single value is needed,
+    /// such as resolving stored favourites onto PTV stop ids.
+    private var primaryRouteType: PTVRouteType { routeTypes[0] }
+
     private let nearbyRadiusMeters: Int
     /// PTV stop coordinates are sparser than the GTFS table, so a radius that
     /// works against SQLite can return nothing here. Widen once rather than
@@ -89,7 +101,7 @@ final class PTVBoardService: TrainBoardProviding {
     private let maxDeparturesPerStop: Int
 
     private init(
-        routeType: PTVRouteType,
+        routeTypes: [PTVRouteType],
         provider: BusProvider,
         nearbyRadiusMeters: Int,
         fallbackRadiusMeters: Int,
@@ -99,7 +111,7 @@ final class PTVBoardService: TrainBoardProviding {
         departuresPerLine: Int,
         maxDeparturesPerStop: Int
     ) {
-        self.routeType = routeType
+        self.routeTypes = routeTypes
         self.provider = provider
         self.nearbyRadiusMeters = nearbyRadiusMeters
         self.fallbackRadiusMeters = fallbackRadiusMeters
@@ -166,16 +178,19 @@ final class PTVBoardService: TrainBoardProviding {
 
         let idMap = await PTVStopIDResolver.shared.ptvStopIds(
             for: favourites,
-            routeType: routeType,
+            routeType: primaryRouteType,
             provider: provider
         )
         let boards = await departureBoards(forStopIds: Array(idMap.values))
         let userLocation = CLLocation(latitude: latitude, longitude: longitude)
 
         let favouriteStops: [NearbyBusStop] = favourites.compactMap { favourite in
-            guard let stopId = idMap[favourite.stopId],
-                  let departures = boards.departures[stopId], !departures.isEmpty
-            else { return nil }
+            guard let stopId = idMap[favourite.stopId] else { return nil }
+            let departures = boards.departures[stopId] ?? []
+            let departureDataAvailability: DepartureDataAvailability = boards.respondingStopIds.contains(stopId)
+                ? .available
+                : .unavailable
+            guard !departures.isEmpty || departureDataAvailability == .unavailable else { return nil }
 
             let distance = Int(userLocation.distance(
                 from: CLLocation(latitude: favourite.latitude, longitude: favourite.longitude)
@@ -188,7 +203,8 @@ final class PTVBoardService: TrainBoardProviding {
                 latitude: favourite.latitude,
                 longitude: favourite.longitude,
                 distanceMeters: distance,
-                departures: departures
+                departures: departures,
+                departureDataAvailability: departureDataAvailability
             )
         }
 
@@ -208,7 +224,12 @@ final class PTVBoardService: TrainBoardProviding {
         let response: PTVDeparturesResponse
         do {
             response = try await PTVAPIClient.shared.get(
-                PTVEndpoint.pattern(runRef: departure.tripId, routeType: routeType),
+                PTVEndpoint.pattern(
+                    runRef: departure.tripId,
+                    // The run reference alone does not say which route type it
+                    // belongs to, and the pattern endpoint 404s on a mismatch.
+                    routeType: departure.isRegional ? .vline : primaryRouteType
+                ),
                 as: PTVDeparturesResponse.self,
                 cacheFor: 20
             )
@@ -278,7 +299,9 @@ final class PTVBoardService: TrainBoardProviding {
             terminalScheduledTime: terminal.scheduledTime,
             terminalPredictedTime: terminal.predictedTime,
             stopsBeforeSelected: leading,
-            stopsFromSelected: trailing
+            stopsFromSelected: trailing,
+            vehicleDescription: response.runs[departure.tripId]?
+                .vehicleDescriptor?.displaySummary
         )
     }
 
@@ -292,6 +315,11 @@ final class PTVBoardService: TrainBoardProviding {
     /// Radius beyond which a single query starts hitting `stopsPerRequestCap`
     /// in dense areas, so the region gets subdivided instead.
     private static let subdivideAboveMeters = 1_200
+
+    /// Only small requests are recorded as complete coverage. A wide PTV
+    /// search can hit the server's 30-stop cap, so marking it as a complete
+    /// cache tile would make a truncated response look authoritative.
+    private static let maxCachedSweepRadiusMeters = 1_200
 
     /// Stops inside a map region, for the favourites picker.
     ///
@@ -327,7 +355,11 @@ final class PTVBoardService: TrainBoardProviding {
             for cell in cells {
                 group.addTask { [weak self] in
                     guard let self else { return [] }
-                    return await self.stops(in: cell)
+                    return await self.stops(
+                        in: cell,
+                        referenceLatitude: centre.coordinate.latitude,
+                        referenceLongitude: centre.coordinate.longitude
+                    )
                 }
             }
             var all: [PTVStop] = []
@@ -348,7 +380,9 @@ final class PTVBoardService: TrainBoardProviding {
     }
 
     private func stops(
-        in cell: (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double)
+        in cell: (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double),
+        referenceLatitude: Double,
+        referenceLongitude: Double
     ) async -> [PTVStop] {
         let centreLat = (cell.minLat + cell.maxLat) / 2
         let centreLon = (cell.minLon + cell.maxLon) / 2
@@ -356,37 +390,154 @@ final class PTVBoardService: TrainBoardProviding {
         let corner = CLLocation(latitude: cell.maxLat, longitude: cell.maxLon)
         let radius = min(max(Int(centre.distance(from: corner).rounded()), 300), 30_000)
 
+        let cacheKey = PTVStopCacheTileKey(
+            latitude: centreLat,
+            longitude: centreLon,
+            radiusMeters: radius,
+            routeTypes: routeTypes
+        )
+        let cache = PTVStopCache.shared
+        let cached = await cache.lookup(
+            minLatitude: cell.minLat,
+            maxLatitude: cell.maxLat,
+            minLongitude: cell.minLon,
+            maxLongitude: cell.maxLon,
+            referenceLatitude: referenceLatitude,
+            referenceLongitude: referenceLongitude,
+            routeTypes: routeTypes,
+            coverageKeys: radius <= Self.maxCachedSweepRadiusMeters ? [cacheKey] : []
+        )
+
+        if radius <= Self.maxCachedSweepRadiusMeters, cached.missingCoverage.isEmpty {
+            return Self.railStopsOnly(cached.stops)
+        }
+
         do {
-            return try await PTVAPIClient.shared.get(
+            let fetched = Self.railStopsOnly(try await PTVAPIClient.shared.get(
                 PTVEndpoint.stopsNear(
                     latitude: centreLat,
                     longitude: centreLon,
-                    routeTypes: [routeType],
+                    routeTypes: routeTypes,
                     maxDistanceMeters: radius
                 ),
                 as: PTVStopsResponse.self,
                 cacheFor: 120
+            ).stops)
+
+            await cache.store(
+                fetched,
+                swept: radius <= Self.maxCachedSweepRadiusMeters ? cached.missingCoverage : []
+            )
+            let merged = await cache.lookup(
+                minLatitude: cell.minLat,
+                maxLatitude: cell.maxLat,
+                minLongitude: cell.minLon,
+                maxLongitude: cell.maxLon,
+                referenceLatitude: referenceLatitude,
+                referenceLongitude: referenceLongitude,
+                routeTypes: routeTypes,
+                coverageKeys: []
             ).stops
+            return Self.railStopsOnly(merged)
         } catch {
             print("⚠️ PTV stop search failed for region cell: \(error.localizedDescription)")
-            return []
+            return Self.railStopsOnly(cached.stops)
         }
+    }
+
+    /// Route type 3 covers V/Line road coaches as well as V/Line trains, and its
+    /// coach stops are ordinary roadside stops — "Ballarat Station/Lydiard St",
+    /// "Southern Cross Coach Terminal" — which have no place on a train board.
+    ///
+    /// V/Line *rail* stops are named "<Place> Railway Station" without exception
+    /// in sweeps across Melbourne, Geelong, Ballarat, Bendigo and Gippsland;
+    /// nothing else in the response distinguishes the two (the run's
+    /// `vehicle_descriptor` is always null on this feed).
+    ///
+    /// A station served by both types shares one stop id between them, so the
+    /// metro entry is preferred where there is a choice: "Footscray Station"
+    /// reads better than "Footscray Railway Station".
+    private static func railStopsOnly(_ stops: [PTVStop]) -> [PTVStop] {
+        var byId: [Int: PTVStop] = [:]
+        for stop in stops {
+            guard stop.routeType != PTVRouteType.vline.rawValue
+                    || stop.stopName.localizedCaseInsensitiveContains("railway station")
+            else { continue }
+
+            if let existing = byId[stop.stopId],
+               existing.routeType != PTVRouteType.vline.rawValue {
+                continue
+            }
+            byId[stop.stopId] = stop
+        }
+        return Array(byId.values)
     }
 
     // MARK: - Fetching
 
     private func nearbyStops(latitude: Double, longitude: Double, radius: Int) async throws -> [PTVStop] {
         func request(_ metres: Int) async throws -> [PTVStop] {
-            try await PTVAPIClient.shared.get(
+            let bounds = PTVStopCache.boundingBox(
+                latitude: latitude,
+                longitude: longitude,
+                radiusMeters: metres
+            )
+            let cacheKey = PTVStopCacheTileKey(
+                latitude: latitude,
+                longitude: longitude,
+                radiusMeters: metres,
+                routeTypes: routeTypes
+            )
+            let cache = PTVStopCache.shared
+            let cached = await cache.lookup(
+                minLatitude: bounds.minLatitude,
+                maxLatitude: bounds.maxLatitude,
+                minLongitude: bounds.minLongitude,
+                maxLongitude: bounds.maxLongitude,
+                referenceLatitude: latitude,
+                referenceLongitude: longitude,
+                routeTypes: routeTypes,
+                coverageKeys: [cacheKey],
+                maxDistanceMeters: metres
+            )
+
+            if cached.missingCoverage.isEmpty {
+                return Self.railStopsOnly(cached.stops)
+            }
+
+            do {
+                let fetched = Self.railStopsOnly(try await PTVAPIClient.shared.get(
                 PTVEndpoint.stopsNear(
                     latitude: latitude,
                     longitude: longitude,
-                    routeTypes: [routeType],
+                    routeTypes: routeTypes,
                     maxDistanceMeters: metres
                 ),
                 as: PTVStopsResponse.self,
                 cacheFor: 120
-            ).stops
+                ).stops)
+                await cache.store(fetched, swept: cached.missingCoverage)
+                let merged = await cache.lookup(
+                    minLatitude: bounds.minLatitude,
+                    maxLatitude: bounds.maxLatitude,
+                    minLongitude: bounds.minLongitude,
+                    maxLongitude: bounds.maxLongitude,
+                    referenceLatitude: latitude,
+                    referenceLongitude: longitude,
+                    routeTypes: routeTypes,
+                    coverageKeys: [],
+                    maxDistanceMeters: metres
+                ).stops
+                return Self.railStopsOnly(merged)
+            } catch {
+                // A previously persisted identity is still useful when PTV is
+                // temporarily unavailable. Departures will make the final
+                // availability decision for the board.
+                if !cached.stops.isEmpty {
+                    return Self.railStopsOnly(cached.stops)
+                }
+                throw error
+            }
         }
 
         var found = try await request(radius)
@@ -402,7 +553,11 @@ final class PTVBoardService: TrainBoardProviding {
 
     private struct StopBoards {
         var departures: [Int: [BusDeparture]] = [:]
+        var respondingStopIds: Set<Int> = []
         var disruptions: [PTVDisruption] = []
+        /// Keyed by run ref so a vehicle serving several of the stops in view
+        /// is drawn once, not once per stop.
+        var vehicles: [String: LiveVehicle] = [:]
     }
 
     /// Fetches boards for several stops at once. `PTVAPIClient` caps how many
@@ -410,39 +565,119 @@ final class PTVBoardService: TrainBoardProviding {
     private func departureBoards(forStopIds stopIds: [Int]) async -> StopBoards {
         guard !stopIds.isEmpty else { return StopBoards() }
 
-        return await withTaskGroup(of: (Int, [BusDeparture], [PTVDisruption]).self) { group in
+        return await withTaskGroup(of: (Int, [BusDeparture], [PTVDisruption], [LiveVehicle], Bool).self) { group in
             for stopId in Set(stopIds) {
                 group.addTask { [weak self] in
-                    guard let self else { return (stopId, [], []) }
+                    guard let self else { return (stopId, [], [], [], false) }
                     let board = await self.departures(forStopId: stopId)
-                    return (stopId, board.departures, board.disruptions)
+                    return (stopId, board.departures, board.disruptions, board.vehicles, board.didReceiveResponse)
                 }
             }
             var result = StopBoards()
-            for await (stopId, departures, disruptions) in group {
+            for await (stopId, departures, disruptions, vehicles, didReceiveResponse) in group {
                 if !departures.isEmpty { result.departures[stopId] = departures }
+                if didReceiveResponse { result.respondingStopIds.insert(stopId) }
                 result.disruptions.append(contentsOf: disruptions)
+                for vehicle in vehicles { result.vehicles[vehicle.id] = vehicle }
             }
             return result
         }
     }
 
+    /// Departures for one stop across every route type this board covers.
+    ///
+    /// The caps apply per route type rather than to the merged list, so a
+    /// station's twelve metro lines cannot crowd out its V/Line services or the
+    /// other way round.
     private func departures(
         forStopId stopId: Int
-    ) async -> (departures: [BusDeparture], disruptions: [PTVDisruption]) {
-        do {
-            let response = try await PTVAPIClient.shared.get(
-                PTVEndpoint.departures(
-                    routeType: routeType,
-                    stopId: stopId,
-                    maxResults: departuresPerRequest
-                ),
-                as: PTVDeparturesResponse.self
+    ) async -> (
+        departures: [BusDeparture],
+        disruptions: [PTVDisruption],
+        vehicles: [LiveVehicle],
+        didReceiveResponse: Bool
+    ) {
+        var departures: [BusDeparture] = []
+        var disruptions: [PTVDisruption] = []
+        var vehicles: [LiveVehicle] = []
+        var didReceiveResponse = false
+
+        for type in routeTypes {
+            do {
+                let response = try await PTVAPIClient.shared.get(
+                    PTVEndpoint.departures(
+                        routeType: type,
+                        stopId: stopId,
+                        maxResults: departuresPerRequest,
+                        expand: Self.expansions(includingVehiclePosition: suppliesVehiclePositions)
+                    ),
+                    as: PTVDeparturesResponse.self
+                )
+                didReceiveResponse = true
+                departures.append(contentsOf: busDepartures(from: response, routeType: type))
+                disruptions.append(contentsOf: response.disruptions.values)
+                if suppliesVehiclePositions {
+                    vehicles.append(contentsOf: liveVehicles(from: response, routeType: type))
+                }
+            } catch {
+                // A stop that exists for one route type need not exist for the
+                // other, so one failure must not empty the whole board.
+                print("⚠️ PTV \(type.displayName) departures failed for stop \(stopId): \(error.localizedDescription)")
+            }
+        }
+
+        // Merged on time-until-departure rather than clock time: a 2-hour window
+        // late at night spans midnight, where seconds-since-midnight wraps.
+        return (
+            departures.sorted { $0.minutesAway < $1.minutesAway },
+            disruptions,
+            vehicles,
+            didReceiveResponse
+        )
+    }
+
+    /// Trams are excluded: measured 2026-07-31, 0 of 55 tram runs across four
+    /// separate corridors carried a `vehicle_position`, so asking for the
+    /// expansion would only make the response bigger.
+    private var suppliesVehiclePositions: Bool {
+        routeTypes.contains { $0 != .tram }
+    }
+
+    private static func expansions(includingVehiclePosition: Bool) -> [String] {
+        let base = ["Route", "Direction", "Run", "Disruption"]
+        return includingVehiclePosition ? base + ["VehiclePosition"] : base
+    }
+
+    /// Pulls live vehicles out of a departures response.
+    ///
+    /// Keyed by run, not by departure: several departures at a stop can belong
+    /// to the same run, and the same vehicle must not be drawn twice.
+    private func liveVehicles(
+        from response: PTVDeparturesResponse,
+        routeType: PTVRouteType
+    ) -> [LiveVehicle] {
+        response.runs.values.compactMap { run -> LiveVehicle? in
+            guard let position = run.vehiclePosition,
+                  position.isValidCoordinate,
+                  position.isFresh()
+            else { return nil }
+
+            let route = response.routes[String(run.routeId)]
+            let number = route?.routeNumber ?? ""
+            let name = route?.routeName ?? ""
+
+            return LiveVehicle(
+                id: run.runRef,
+                // PTV's run ref is exactly what BusDeparture stores as tripId,
+                // so board matching is a direct lookup.
+                tripId: run.runRef,
+                latitude: position.latitude,
+                longitude: position.longitude,
+                bearing: position.bearing,
+                routeLabel: number.isEmpty ? name : number,
+                isRail: routeType == .train || routeType == .vline,
+                isStopped: false
             )
-            return (busDepartures(from: response), Array(response.disruptions.values))
-        } catch {
-            print("⚠️ PTV departures failed for stop \(stopId): \(error.localizedDescription)")
-            return ([], [])
         }
     }
 
@@ -489,17 +724,67 @@ final class PTVBoardService: TrainBoardProviding {
         return selected.sorted { $0.when < $1.when }
     }
 
-    private func busDepartures(from response: PTVDeparturesResponse) -> [BusDeparture] {
+    /// V/Line lists one physical train once per marketed through-journey, so the
+    /// 07:53 Ballarat service appears at Southern Cross under eleven route ids
+    /// with eleven run references. Two listings that leave the same stop at the
+    /// same minute and finish at the same stop are the same train.
+    ///
+    /// The survivor is the one on a genuine rail line rather than a coach route
+    /// that happens to share the rail leg, so the board says "Geelong" rather
+    /// than "Warrnambool - Melbourne via Apollo Bay & Geelong".
+    private func deduplicateRegional(
+        _ upcoming: [UpcomingDeparture],
+        response: PTVDeparturesResponse
+    ) -> [UpcomingDeparture] {
+        var bestForTrain: [String: (rank: Int, departure: UpcomingDeparture)] = [:]
+        var order: [String] = []
+
+        for departure in upcoming {
+            let run = response.runs[String(departure.entry.runRef)]
+            let key = "\(departure.when.timeIntervalSince1970)|\(run?.finalStopId ?? 0)"
+            let gtfsId = response.routes[String(departure.entry.routeId)]?.routeGTFSId ?? ""
+            let rank = Self.isRailLine(gtfsId) ? 0 : 1
+
+            if let existing = bestForTrain[key] {
+                if rank < existing.rank { bestForTrain[key] = (rank, departure) }
+            } else {
+                bestForTrain[key] = (rank, departure)
+                order.append(key)
+            }
+        }
+
+        return order.compactMap { bestForTrain[$0]?.departure }
+    }
+
+    /// V/Line rail lines carry a three-letter GTFS id under the `1-` prefix
+    /// (`1-GEL`, `1-BAT`, `1-TRN`); coach routes are numbered (`1-V09`, `1-995`),
+    /// lower-cased (`1-pay`) or sit under another prefix (`5-GCL`). Matching this
+    /// picks out exactly the thirteen V/Line rail lines.
+    private static func isRailLine(_ routeGTFSId: String) -> Bool {
+        let parts = routeGTFSId.split(separator: "-", maxSplits: 1)
+        guard parts.count == 2, parts[0] == "1", parts[1].count == 3 else { return false }
+        return parts[1].allSatisfy { $0.isUppercase && $0.isLetter }
+    }
+
+    private func busDepartures(
+        from response: PTVDeparturesResponse,
+        routeType: PTVRouteType
+    ) -> [BusDeparture] {
         let now = Date()
         let cutoff = departureWindow.map { now.addingTimeInterval(TimeInterval($0)) }
+        let isRegional = routeType == .vline
 
-        let upcoming = response.departures
+        var upcoming = response.departures
             .compactMap { entry -> UpcomingDeparture? in
                 guard let when = entry.effectiveDeparture, when >= now else { return nil }
                 if let cutoff, when > cutoff { return nil }
                 return UpcomingDeparture(entry: entry, when: when)
             }
             .sorted { $0.when < $1.when }
+
+        if isRegional {
+            upcoming = deduplicateRegional(upcoming, response: response)
+        }
 
         return selectDepartures(from: upcoming)
             .map { departure in
@@ -512,23 +797,60 @@ final class PTVBoardService: TrainBoardProviding {
                 let routeName = route?.routeName ?? ""
                 let routeNumber = route?.routeNumber ?? ""
                 let scheduled = entry.scheduledDeparture ?? when
+                let destination = run?.destinationName.isEmpty == false
+                    ? run?.destinationName
+                    : direction?.directionName
 
                 return BusDeparture(
                     tripId: entry.runRef,
-                    routeShortName: routeNumber.isEmpty ? routeName : routeNumber,
-                    routeLongName: routeName,
-                    headsign: run?.destinationName.isEmpty == false
-                        ? run?.destinationName
-                        : direction?.directionName,
+                    // V/Line has no route number and its route names are whole
+                    // journeys ("Geelong - Melbourne"), which make a poor badge.
+                    // The operator name is the useful distinction on a board that
+                    // mixes it with metro services; the line goes in the subtitle.
+                    routeShortName: isRegional
+                        ? "V/Line"
+                        : (routeNumber.isEmpty ? routeName : routeNumber),
+                    routeLongName: isRegional ? Self.regionalLineName(routeName) : routeName,
+                    headsign: isRegional ? destination.map(Self.shortStationName) : destination,
                     scheduledTime: timeString(scheduled),
                     scheduledSeconds: secondsSinceMelbourneMidnight(scheduled),
                     predictedTime: entry.estimatedDeparture.map(timeString),
                     delaySeconds: entry.delaySeconds ?? 0,
                     minutesAway: max(0, Int(when.timeIntervalSince(now) / 60)),
                     status: status(for: entry),
-                    stopSequence: entry.departureSequence
+                    stopSequence: entry.departureSequence,
+                    platform: entry.platformNumber,
+                    directionId: entry.directionId,
+                    directionName: direction?.directionName,
+                    expressStopCount: run?.expressStopCount ?? 0,
+                    isAtPlatform: entry.atPlatform,
+                    isRegional: isRegional
                 )
             }
+    }
+
+    /// "Geelong - Melbourne" → "Geelong". V/Line names every route from the
+    /// country end inwards, so the leading segment is the line as riders know it.
+    private static func regionalLineName(_ routeName: String) -> String {
+        // Split on the spaced hyphen: "Ballarat-Wendouree - Melbourne via Melton"
+        // must keep its hyphenated place name intact.
+        let line = routeName
+            .components(separatedBy: " - ")
+            .first?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        return line.isEmpty ? routeName : line
+    }
+
+    /// V/Line destinations arrive as "Waurn Ponds Railway Station"; the suffix is
+    /// noise in a row that is already on a train board.
+    /// `nonisolated` so it can be passed by reference to `Optional.map`, which
+    /// is itself nonisolated — see the note on default main-actor isolation in
+    /// CLAUDE.md. It is a pure string transform with no state to protect.
+    nonisolated private static func shortStationName(_ name: String) -> String {
+        guard let range = name.range(of: " Railway Station", options: [.caseInsensitive, .backwards]),
+              range.upperBound == name.endIndex
+        else { return name }
+        return String(name[..<range.lowerBound])
     }
 
     private func makeBoard(
@@ -545,7 +867,7 @@ final class PTVBoardService: TrainBoardProviding {
             ? [:]
             : await PTVStopIDResolver.shared.ptvStopIds(
                 for: favourites,
-                routeType: routeType,
+                routeType: primaryRouteType,
                 provider: provider
               )
 
@@ -555,8 +877,12 @@ final class PTVBoardService: TrainBoardProviding {
         let reference = CLLocation(latitude: referenceLatitude, longitude: referenceLongitude)
 
         let nearbyStops: [NearbyBusStop] = stops.compactMap { stop in
-            guard let departures = boards.departures[stop.stopId], !departures.isEmpty else { return nil }
-            let distance = stop.distanceMeters.map { Int($0) } ?? Int(reference.distance(
+            let departures = boards.departures[stop.stopId] ?? []
+            let departureDataAvailability: DepartureDataAvailability = boards.respondingStopIds.contains(stop.stopId)
+                ? .available
+                : .unavailable
+            guard !departures.isEmpty || departureDataAvailability == .unavailable else { return nil }
+            let distance = Int(reference.distance(
                 from: CLLocation(latitude: stop.latitude, longitude: stop.longitude)
             ))
             return NearbyBusStop(
@@ -566,15 +892,19 @@ final class PTVBoardService: TrainBoardProviding {
                 latitude: stop.latitude,
                 longitude: stop.longitude,
                 distanceMeters: distance,
-                departures: departures
+                departures: departures,
+                departureDataAvailability: departureDataAvailability
             )
         }
 
         let nearbyIdSet = Set(nearbyIds)
         let favouriteStops: [NearbyBusStop] = favourites.compactMap { favourite in
-            guard let stopId = idMap[favourite.stopId], !nearbyIdSet.contains(stopId),
-                  let departures = boards.departures[stopId], !departures.isEmpty
-            else { return nil }
+            guard let stopId = idMap[favourite.stopId], !nearbyIdSet.contains(stopId) else { return nil }
+            let departures = boards.departures[stopId] ?? []
+            let departureDataAvailability: DepartureDataAvailability = boards.respondingStopIds.contains(stopId)
+                ? .available
+                : .unavailable
+            guard !departures.isEmpty || departureDataAvailability == .unavailable else { return nil }
 
             let distance = Int(reference.distance(
                 from: CLLocation(latitude: favourite.latitude, longitude: favourite.longitude)
@@ -586,7 +916,8 @@ final class PTVBoardService: TrainBoardProviding {
                 latitude: favourite.latitude,
                 longitude: favourite.longitude,
                 distanceMeters: distance,
-                departures: departures
+                departures: departures,
+                departureDataAvailability: departureDataAvailability
             )
         }
 
@@ -596,7 +927,8 @@ final class PTVBoardService: TrainBoardProviding {
             favouriteStops: favouriteStops,
             alerts: alerts(from: boards.disruptions),
             localTimeAtFetch: currentMelbourneTimeString(),
-            locationAvailable: true
+            locationAvailable: true,
+            liveVehicles: Array(boards.vehicles.values)
         )
     }
 
