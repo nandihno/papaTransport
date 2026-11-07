@@ -218,10 +218,11 @@ nonisolated enum PTVEndpoint {
     /// `expand=VehicleDescriptor` is required for `vehicle_descriptor` to be
     /// populated — without it the field comes back nil even on runs that have
     /// one (verified 2026-07-31).
-    static func pattern(runRef: String, routeType: PTVRouteType) -> String {
+    static func pattern(runRef: String, routeType: PTVRouteType, includeGeopath: Bool = false) -> String {
         let encoded = runRef.addingPercentEncoding(withAllowedCharacters: runRefAllowed) ?? runRef
         return "/v3/pattern/run/\(encoded)/route_type/\(routeType.rawValue)"
             + "?expand=Stop&expand=Run&expand=VehicleDescriptor"
+            + (includeGeopath ? "&include_geopath=true" : "")
     }
 
     static func disruptionsForStop(_ stopId: Int) -> String {

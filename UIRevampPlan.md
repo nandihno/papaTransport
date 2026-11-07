@@ -1,7 +1,8 @@
 # PapaTransport — UI Revamp Plan
 
-Status: **Phases 1–3 complete and confirmed on device** (Phase 1 2026-07-28,
-Phases 2–3 2026-07-29). **Phase 4 outstanding** — see the end of this document.
+Status: **Phases 1–4 implemented.** Phases 1–3 confirmed on device (Phase 1
+2026-07-28, Phases 2–3 2026-07-29). Phase 4 implemented 2026-10-16 with
+simulator and regression validation; physical-device acceptance remains pending.
 Context: the Victorian data layer now runs entirely on the PTV API. The views were
 built incrementally around the old GTFS-backed shape and have accumulated
 duplicate renderings, duplicate chrome, and a colour system that only ever worked
@@ -679,7 +680,7 @@ both mine, both from Phase 3 and the vehicle-tap work:
 
 ---
 
-### Phase 4 — Make the map earn its space
+### Phase 4 — Make the map earn its space ✅ IMPLEMENTED (2026-10-16)
 
 The map is the thing worth keeping, so give it more to do:
 
@@ -691,7 +692,145 @@ The map is the thing worth keeping, so give it more to do:
 - **Let the sheet collapse further** — a peek detent showing just the next
   departure, so the map can be nearly full-screen when the user is orienting.
 
+#### Delivered behavior and architecture
+
+- Tapping a departure row selects its service on the map and immediately opens
+  the existing trip-detail sheet. Live vehicle pins select a service; station
+  pins reveal the station board (see follow-up below). The map draws the selected service's actual
+  geometry; other stop and vehicle pins fade while remaining selectable.
+  **Trip details** opens the existing trip sheet; **Clear** restores all pins.
+  These controls also appear inside the expanded sheet so they remain reachable
+  when it covers the map header.
+- `MapRouteSelection` owns shared selection and geometry loading for both map
+  explorers. Feed identity, rather than the departure's regenerated UUID, keeps
+  selection through refreshes. Removed departures clear it; canceled or obsolete
+  requests cannot replace a newer selection. Nearby/favourite entries for the
+  same stop merge their departures so route search cannot erase a favourite.
+- `BusDataProviding.fetchRouteGeometry` supplies separate coordinate paths.
+  Victoria requests the selected run's PTV geopath, validates its direction and
+  date window, and parses coordinates off the main actor. Queensland joins the
+  trip's `shape_id` to ordered GTFS shape points. Missing geometry is reported
+  visibly; stop coordinates are never joined into an invented route.
+- The old shape-data commit mentioned above no longer supplies the current
+  Queensland schema. Both `GTFSFeedImporter` and `scripts/build_seq_db.sh` now
+  import optional shapes and `trips.shape_id`. Existing installed databases
+  continue serving boards while normal background refresh upgrades the schema,
+  bypassing ETag for that upgrade. Failed downloads/imports keep the old database.
+  Invalid points invalidate a whole shape, avoiding lines across missing data.
+- The smallest shared sheet detent now shows only the next departure at the
+  selected stop (or earliest visible departure without a selected stop), with
+  loading/empty fallbacks. The full list stays mounted to preserve its state.
+  A tappable/VoiceOver-adjustable grip expands it. Large text uses a vertical
+  row with scrolling when needed; Reduce Motion removes the spring animation.
+
+#### Validation and remaining acceptance
+
+- iPhone 17 Pro simulator, iOS 26.5: real Flinders Street departures, selected
+  row, fading pins, compact next-departure view, reachable tab bar and successful
+  trip-detail presentation/dismissal. Largest accessibility text size was checked
+  with the compact row's scrolling fallback; the prior text size was restored.
+  Landscape peek and vehicle-to-route selection were also checked, then the
+  simulator was returned to upright portrait.
+- `bash scripts/validate_route_geometry.sh`: production PTV decoding, direction/
+  validity filtering, ordered bus/rail queries, legacy schemas, optional shapes,
+  malformed shape rejection and parity of both import paths, using scratch data.
+- `bash scripts/validate_map_selection.sh`: refresh identity, replacement/clear/
+  cancellation races, failures, favourite merging, next-departure ordering and
+  matching pins. Requires macOS/Xcode; Observation's macro helper may require an
+  unsandboxed local run.
+- Simulator build passed. The full initial build reports eight pre-existing
+  Plan Lite MapKit deprecation warnings. There is no SwiftLint configuration or
+  installed SwiftLint; shell syntax/container checks and `git diff --check` apply.
+- **Still pending:** physical-device acceptance, a
+  live Queensland schema upgrade and route-overlay visual acceptance with valid
+  geometry. The live PTV samples returned geometry dated 2026-10-30 onward;
+  on 2026-10-16 those paths correctly show as unavailable. Fixture checks validate
+  valid geometry independently. No release/deployment was performed.
+
+#### Station-pane feedback follow-up (2026-10-16)
+
+Device feedback exposed a confusing interaction: a selected station could remain
+in the one-departure peek, with no visible instruction for revealing its board.
+Station pins are now explicit buttons. A tap immediately expands the sheet and
+scrolls to that station, even when tapping the same selected station again.
+All of its direction groups start open; each can still be collapsed manually.
+The station heading reports the loaded departure count and two-hour window.
+The peek visibly offers **Show departures**, and tapping its departure also
+reveals the list. Bus/tram stops use the same shared presentation state.
+
+Departure display is independent of route-geometry loading. Existing rows remain
+visible while a refresh shows **Updating departures…**. Nearby/favourite copies
+of a train station share a merged departure list and a single scroll anchor.
+Train regional results publish before slower favourites complete, and the train
+board refresh runs alongside the parent's status refresh. The provider's full
+regional batch still waits for its station requests; this does not establish a
+new bound on network latency or remove the documented two-hour/per-route limits.
+
+Both map views now ignore insignificant camera changes before cancelling work,
+show loading during a meaningful pan's debounce, and reject cancelled/obsolete
+responses using a request generation. Disappearance and excessive train zoom
+invalidate work and clear the loading indicator. A failed refresh retains the
+previously displayed station board.
+
+Validation: simulator build and the production-model regression harness pass,
+including repeated station/list reveal requests. Controlled async checks of the
+actual view reload functions pass stale/cancelled response, loading ownership,
+and delayed-favourite scenarios. On the iPhone 17 Pro simulator, tapping Flinders
+Street from the collapsed pane immediately expanded/focused its board with
+multiple routes and approximately 90 loaded departures. Physical-device
+acceptance of this follow-up remains pending.
+
+#### Departure-detail tap follow-up (2026-10-16)
+
+A departure row's chevron implied opening details, but its callback only selected
+the map route. In a scrolled/expanded board the separate **Trip details** action
+could be above the viewport or behind the sheet. Row callbacks now synchronously
+set the existing host-owned trip request as well as the map selection, for train,
+bus and tram boards, including favourites. This preserves the single presenter
+per explorer and does not wait for geometry or another board refresh. Peek rows
+continue revealing the departure list; vehicle pins continue selecting the map.
+VoiceOver hints describe the restored row action.
+
+Validation: simulator build and whitespace checks passed. Runtime tap verification
+could not be completed in this follow-up: Device Hub input returned
+`noWindowsAvailable`, while simulator tap commands did not change the screen.
+Physical-device confirmation of direct row-to-detail presentation remains pending.
+
+#### Train platform in trip details (2026-10-16)
+
+The train trip summary now shows the selected departure's PTV platform directly
+beneath the selected station name, alongside the stop sequence. It uses the same
+departure field already shown on the board row, so opening trip details does not
+need another request. The platform line is omitted when the provider has no
+value; Queensland's current GTFS-backed train departures still leave it unset.
+
+Validation: simulator build passed. Physical-device visual confirmation remains
+pending.
+
+#### Collapsed train details by default (2026-10-16)
+
+To keep service status easy to reach, train station direction groups now start
+collapsed when a station is opened. Planned-works details start minimized, while
+the **Train Line Status** summary remains expanded above the station list. In
+the selected-trip sheet, **Stops From Here** also starts closed and can be
+expanded on demand. New directions added by a board refresh start collapsed as
+well.
+
+Validation: simulator build and whitespace checks passed. Physical-device visual
+confirmation remains pending.
+
 ---
+
+### Adaptive map and departure layouts (2026-11-07)
+
+The shared map scaffold limits its panel width on wider windows so the map remains
+visible when the device opens. Narrow layouts keep the full-width sheet. Shared
+departure rows give destinations and service details room to wrap, and station
+distance badges use kilometres for longer distances. These changes apply to the
+bus, train and tram explorers without changing their selection or refresh logic.
+Direction groups order departures by their effective countdown so the next
+service remains correct across midnight and when live predictions change order.
+Physical-device testing in both open and closed positions is still required.
 
 ## 3. Sequencing
 
@@ -700,7 +839,7 @@ The map is the thing worth keeping, so give it more to do:
 | ~~1 — foundations~~ ✅ | done | — | Text readable; type scales with accessibility settings |
 | ~~2 — density~~ ✅ | done, −831 lines | — | Duplicate list gone; grouped by direction; nesting 4 levels → 2 |
 | ~~3 — shell~~ ✅ | done | — | Glass chrome; ~490 lines of duplicated sheet code gone |
-| 4 — map | Open-ended | Low, additive | Map becomes genuinely useful, not decorative |
+| ~~4 — map~~ ✅ | implemented; device acceptance pending | Additive | Selected route, linked pins/rows and next-departure peek |
 
 Phase 1 is worth doing on its own regardless of what happens to the rest — it is
 the fix for the actual complaint and it cannot break layout.

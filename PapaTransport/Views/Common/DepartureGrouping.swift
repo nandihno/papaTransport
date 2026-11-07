@@ -50,7 +50,10 @@ extension Array where Element == BusDeparture {
                 DepartureDirectionGroup(
                     label: label,
                     isCityward: label == "City",
-                    departures: departures.sorted { $0.scheduledSeconds < $1.scheduledSeconds }
+                    // Clock seconds wrap at midnight and ignore live delays.
+                    // Countdown is relative to now and already reflects the
+                    // effective departure time for both PTV and GTFS boards.
+                    departures: departures.sorted { $0.minutesAway < $1.minutesAway }
                 )
             }
             .sorted { lhs, rhs in

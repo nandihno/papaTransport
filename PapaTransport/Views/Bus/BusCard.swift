@@ -14,6 +14,9 @@ struct BusCard: View {
     let showsNearby: Bool
     let showsFavourites: Bool
     let emptyStateMessageOverride: String?
+    let mapSelection: MapDepartureSelection?
+    let onSelectMapDeparture: ((BusDeparture, String) -> Void)?
+    let revealID: UUID?
 
     private let selectedStopIDBinding: Binding<String?>?
     /// When the host owns trip presentation, this card raises the request
@@ -32,21 +35,29 @@ struct BusCard: View {
         busInfo: BusInfo,
         selectedStopID: Binding<String?>? = nil,
         selectedTrip: Binding<BusTripRequest?>? = nil,
+        mapSelection: MapDepartureSelection? = nil,
+        onSelectMapDeparture: ((BusDeparture, String) -> Void)? = nil,
         showsNearby: Bool = true,
         showsFavourites: Bool = true,
-        emptyStateMessageOverride: String? = nil
+        emptyStateMessageOverride: String? = nil,
+        revealID: UUID? = nil
     ) {
         self.title = title
         self.busInfo = busInfo
         self.selectedStopIDBinding = selectedStopID
         self.selectedTripBinding = selectedTrip
+        self.mapSelection = mapSelection
+        self.onSelectMapDeparture = onSelectMapDeparture
         self.showsNearby = showsNearby
         self.showsFavourites = showsFavourites
         self.emptyStateMessageOverride = emptyStateMessageOverride
+        self.revealID = revealID
     }
 
     private func selectTrip(_ request: BusTripRequest) {
-        if let selectedTripBinding {
+        if let onSelectMapDeparture {
+            onSelectMapDeparture(request.departure, request.stopId)
+        } else if let selectedTripBinding {
             selectedTripBinding.wrappedValue = request
         } else {
             localSelectedTripRequest = request
@@ -169,6 +180,8 @@ struct BusCard: View {
                             isTripDetailEnabled: true,
                             isSelected: selectedStopID == stop.id,
                             isExpanded: expandedStopIDs.contains(stop.id),
+                            mapSelection: mapSelection,
+                            highlightsRoute: onSelectMapDeparture != nil,
                             onToggleExpanded: {
                                 toggleExpansion(for: stop.id)
                             },
@@ -182,6 +195,7 @@ struct BusCard: View {
                                 departure: departure
                             ))
                         }
+                        .id("stop:\(stop.id)")
                     }
                 }
 
@@ -199,6 +213,8 @@ struct BusCard: View {
                             isTripDetailEnabled: true,
                             isSelected: selectedStopID == stop.id,
                             isExpanded: expandedStopIDs.contains(stop.id),
+                            mapSelection: mapSelection,
+                            highlightsRoute: onSelectMapDeparture != nil,
                             onToggleExpanded: {
                                 toggleExpansion(for: stop.id)
                             },
@@ -212,6 +228,7 @@ struct BusCard: View {
                                 departure: departure
                             ))
                         }
+                        .id("stop:favourite:\(stop.id)")
                     }
                 }
             }
@@ -228,6 +245,11 @@ struct BusCard: View {
         }
         .onChange(of: allDisplayedStopIDs) { _, _ in
             synchronizeSelectionWithCurrentStops()
+        }
+        .onChange(of: revealID) { _, _ in
+            if let selectedStopID, allDisplayedStopIDs.contains(selectedStopID) {
+                expandedStopIDs.insert(selectedStopID)
+            }
         }
         .sheet(item: selectedTripBinding == nil ? $localSelectedTripRequest : .constant(nil)) { request in
             BusTripDetailSheet(request: request)
@@ -263,9 +285,8 @@ struct BusCard: View {
         }
 
         if isExternallyControlled {
-            if selectedStopID != nil {
-                setSelectedStopID(nil)
-            }
+            // The host validates the union of nearby and favourite stops.
+            // This card cannot invalidate a selection in its sibling card.
             return
         }
 
@@ -338,6 +359,8 @@ struct BusStopSection: View {
     let isTripDetailEnabled: Bool
     let isSelected: Bool
     let isExpanded: Bool
+    var mapSelection: MapDepartureSelection? = nil
+    var highlightsRoute: Bool = false
     let onToggleExpanded: () -> Void
     let onSelectStop: () -> Void
     let onSelectDeparture: (BusDeparture) -> Void
@@ -365,7 +388,7 @@ struct BusStopSection: View {
                         }
                     }
                     Spacer()
-                    Text("\(stop.distanceMeters)m away")
+                    Text(formattedStopDistance(stop.distanceMeters))
                         .font(.transitBadge)
                         .foregroundStyle(isSelected ? palette.buttonForeground : palette.textSecondary)
                         .padding(.horizontal, 8)
@@ -395,7 +418,9 @@ struct BusStopSection: View {
                     ForEach(stop.departures) { departure in
                         DepartureRow(
                             departure: departure,
-                            isInteractive: isTripDetailEnabled
+                            isInteractive: isTripDetailEnabled,
+                            isSelected: mapSelection?.matches(departure, at: stop.id) == true,
+                            highlightsRoute: highlightsRoute
                         ) {
                             onSelectDeparture(departure)
                         }

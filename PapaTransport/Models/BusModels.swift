@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import CoreLocation
 
 // MARK: - Transport Region
 
@@ -96,6 +97,7 @@ protocol BusDataProviding {
     var provider: BusProvider { get }
     func fetchBusInfo(latitude: Double, longitude: Double) async throws -> BusInfo
     func fetchTripDetail(for departure: BusDeparture, stopId: String) async throws -> BusTripDetail
+    func fetchRouteGeometry(for departure: BusDeparture) async throws -> [[CLLocationCoordinate2D]]
 }
 
 /// Boards that can also render saved stops.

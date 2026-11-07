@@ -19,21 +19,21 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
     let onOpenSettings: () -> Void
     let onRecenter: () -> Void
     let onRefresh: () async -> Void
+    let presentation: MapSheetPresentation
+    var departureListFocusID: String? = nil
+    var peekDeparture: MapPeekDeparture? = nil
 
     @ViewBuilder var mapContent: MapContent
     @ViewBuilder var headerContent: HeaderContent
     @ViewBuilder var sheetContent: SheetContent
 
     @Environment(\.themePalette) private var palette
-    @State private var detent: SheetDetent = .medium
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dragTranslation: CGFloat = 0
     @State private var isDragging = false
+    @State private var peekContentHeight: CGFloat = 100
 
-    enum SheetDetent: CaseIterable {
-        case collapsed
-        case medium
-        case expanded
-    }
+    private var detent: MapSheetPresentation.Detent { presentation.detent }
 
     var body: some View {
         GeometryReader { proxy in
@@ -46,6 +46,8 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
                     bottomSheet(proxy: proxy)
+                        .frame(maxWidth: proxy.size.width >= 700 ? 480 : .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -106,24 +108,61 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
         return VStack(spacing: 0) {
             gripHandle
                 .contentShape(Rectangle())
-                .gesture(dragGesture(in: proxy))
+                .simultaneousGesture(dragGesture(in: proxy))
 
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 16) {
-                    sheetContent
+            ZStack {
+                // Keep section expansion and scroll state alive while the peek
+                // replaces the visible list.
+                ScrollViewReader { reader in
+                    ScrollView(showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            sheetContent
+                        }
+                        .id("map-sheet-top")
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, safeBottom + 10)
+                    }
+                    .scrollEdgeEffectStyle(.soft, for: .top)
+                    .refreshable { await onRefresh() }
+                    .task(id: presentation.revealID) {
+                        await Task.yield()
+                        guard !Task.isCancelled else { return }
+                        dragTranslation = 0
+                        isDragging = false
+                        let target = presentation.focusedStopID.map { "stop:\($0)" } ?? "map-sheet-top"
+                        withAnimation(sheetAnimation) {
+                            reader.scrollTo(target, anchor: .top)
+                        }
+                    }
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, safeBottom + 10)
+                .opacity(detent == .collapsed ? 0 : 1)
+                .allowsHitTesting(detent != .collapsed)
+                .accessibilityHidden(detent == .collapsed)
+
+                if detent == .collapsed {
+                    ScrollView(showsIndicators: false) {
+                        peekContent
+                            .padding(.horizontal, 18)
+                            .padding(.top, 2)
+                            .padding(.bottom, 14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .onGeometryChange(for: CGFloat.self) { geometry in
+                                geometry.size.height
+                            } action: { height in
+                                peekContentHeight = height
+                            }
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                }
             }
-            .scrollEdgeEffectStyle(.soft, for: .top)
-            .refreshable { await onRefresh() }
         }
         .frame(maxWidth: .infinity)
         .frame(height: height(in: proxy), alignment: .top)
         .glassEffect(.regular, in: .rect(cornerRadius: 30))
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
-        .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: detent)
+        .animation(sheetAnimation, value: detent)
         .transaction { transaction in
             if isDragging { transaction.animation = nil }
         }
@@ -131,11 +170,53 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
 
     private var gripHandle: some View {
         VStack(spacing: 10) {
-            Capsule()
-                .fill(palette.textTertiary.opacity(0.5))
-                .frame(width: 40, height: 4)
-                .padding(.top, 10)
+            Button {
+                if detent == .collapsed { presentation.showDepartures(at: departureListFocusID) }
+                else { setDetent(.collapsed) }
+            } label: {
+                Group {
+                    if detent == .collapsed {
+                        HStack(spacing: 8) {
+                            Text("Show departures")
+                                .lineLimit(1)
+                            Image(systemName: "chevron.up")
+                        }
+                        .font(.transitLabel)
+                        .foregroundStyle(palette.accentText)
+                        .padding(.horizontal, 18)
+                    } else {
+                        Capsule()
+                            .fill(palette.textTertiary.opacity(0.5))
+                            .frame(width: 40, height: 4)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(detent == .collapsed ? "Show departures" : "Departure sheet")
+            .accessibilityValue(detent.accessibilityDescription)
+            .accessibilityHint(detent == .collapsed ? "Expands the departure list." : "Shows just the next departure.")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment:
+                    setDetent(detent == .collapsed ? .medium : .expanded)
+                case .decrement:
+                    setDetent(detent == .expanded ? .medium : .collapsed)
+                @unknown default:
+                    break
+                }
+            }
 
+            if detent != .collapsed {
+                sheetHeading
+            }
+        }
+    }
+
+    private var sheetHeading: some View {
+        VStack(spacing: 10) {
             HStack(alignment: .center, spacing: 8) {
                 Text(title)
                     .font(.transitBody)
@@ -162,6 +243,26 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
         }
     }
 
+    @ViewBuilder
+    private var peekContent: some View {
+        if let peekDeparture {
+            MapPeekDepartureRow(item: peekDeparture) {
+                presentation.showDepartures(at: departureListFocusID)
+            }
+        } else {
+            HStack(spacing: 10) {
+                if isLoading {
+                    ProgressView()
+                }
+                Text(isLoading ? "Loading next departure…" : "No upcoming departures in view")
+                    .font(.transitBody)
+                    .foregroundStyle(palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(minHeight: 44)
+        }
+    }
+
     // MARK: - Detents
 
     private func height(in proxy: GeometryProxy) -> CGFloat {
@@ -174,18 +275,18 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
         )
     }
 
-    private func detentHeights(in proxy: GeometryProxy) -> [SheetDetent: CGFloat] {
+    private func detentHeights(in proxy: GeometryProxy) -> [MapSheetPresentation.Detent: CGFloat] {
         let safeTop = max(proxy.safeAreaInsets.top, 12)
-        let safeBottom = max(proxy.safeAreaInsets.bottom, 12)
-        let availableHeight = proxy.size.height - safeTop
-        let collapsed = max(104, safeBottom + 92)
-        let expanded = min(availableHeight - 18, proxy.size.height * 0.88)
-        let medium = min(max(360, proxy.size.height * 0.47), expanded - 80)
+        let availableHeight = max(0, proxy.size.height - safeTop - 18)
+        let expanded = min(availableHeight, proxy.size.height * 0.88)
+        let maximumPeekHeight = min(expanded, max(88, expanded * 0.65))
+        let collapsed = min(max(88, peekContentHeight + 44), maximumPeekHeight)
+        let medium = min(max(collapsed, max(360, proxy.size.height * 0.47)), expanded)
 
         return [
             .collapsed: collapsed,
-            .medium: max(collapsed + 60, medium),
-            .expanded: max(medium + 80, expanded),
+            .medium: medium,
+            .expanded: expanded,
         ]
     }
 
@@ -203,14 +304,14 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
                     heights[.expanded] ?? base
                 )
 
-                let nearest = SheetDetent.allCases.min {
+                let nearest = MapSheetPresentation.Detent.allCases.min {
                     abs((heights[$0] ?? projected) - projected) <
                     abs((heights[$1] ?? projected) - projected)
                 }
 
                 if let nearest {
-                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.84)) {
-                        detent = nearest
+                    withAnimation(sheetAnimation) {
+                        presentation.detent = nearest
                         dragTranslation = 0
                         isDragging = false
                     }
@@ -220,6 +321,25 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
                 }
             }
     }
+
+    private var sheetAnimation: Animation? {
+        reduceMotion ? nil : .interactiveSpring(response: 0.34, dampingFraction: 0.86)
+    }
+
+    private func setDetent(_ newDetent: MapSheetPresentation.Detent) {
+        withAnimation(sheetAnimation) {
+            presentation.detent = newDetent
+            dragTranslation = 0
+        }
+    }
+}
+
+func formattedStopDistance(_ meters: Int) -> String {
+    if meters < 1_000 {
+        return "\(meters.formatted()) m away"
+    }
+    let kilometers = (Double(meters) / 1_000).formatted(.number.precision(.fractionLength(1)))
+    return "\(kilometers) km away"
 }
 
 /// Status/progress row shown inside a map sheet.

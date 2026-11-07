@@ -35,12 +35,14 @@ nonisolated struct GTFSFeedImporter {
         }
     }
 
-    /// Files actually needed. `shapes.txt` is 37 MB and unused by any query,
-    /// and `agency.txt` has no table — skipping both saves real time.
+    /// Shapes are optional in GTFS; a feed without them still serves boards.
     private static let requiredFiles = [
         "stops.txt", "routes.txt", "trips.txt",
         "stop_times.txt", "calendar.txt", "calendar_dates.txt",
     ]
+    private static let coordinatePattern = try? NSRegularExpression(
+        pattern: #"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$"#
+    )
 
     let archiveURL: URL
     let destinationPath: String
@@ -77,12 +79,14 @@ nonisolated struct GTFSFeedImporter {
         // does not stall for a minute on stop_times.
         let weights: [String: Double] = [
             "stops.txt": 0.01, "routes.txt": 0.01, "calendar.txt": 0.01,
-            "calendar_dates.txt": 0.01, "trips.txt": 0.06, "stop_times.txt": 0.75,
+            "calendar_dates.txt": 0.01, "trips.txt": 0.06, "stop_times.txt": 0.60,
+            "shapes.txt": 0.15,
         ]
         var completed = 0.0
 
         try exec(db, "BEGIN")
-        for name in Self.requiredFiles {
+        let files = Self.requiredFiles + (archive.entry(named: "shapes.txt") == nil ? [] : ["shapes.txt"])
+        for name in files {
             guard let entry = archive.entry(named: name) else {
                 throw ImportError.missingFile(name)
             }
@@ -141,8 +145,18 @@ nonisolated struct GTFSFeedImporter {
         var bytesSeen = 0
         var rowIndex = 0
         var lastReported = 0.0
+        var invalidShapeIds: Set<String> = []
 
         let binder = try binder(for: entry.name, db: db, statement: &statement)
+
+        func bind(_ buffer: UnsafeRawBufferPointer, _ fields: [Range<Int>], _ statement: OpaquePointer) -> Bool {
+            if binder(buffer, fields, header, statement) { return true }
+            if entry.name == "shapes.txt", let index = header["shape_id"], index < fields.count {
+                let id = buffer.string(fields[index])
+                if !id.isEmpty { invalidShapeIds.insert(id) }
+            }
+            return false
+        }
 
         try archive.stream(entry) { chunk in
             bytesSeen += chunk.count
@@ -163,7 +177,7 @@ nonisolated struct GTFSFeedImporter {
                 guard let statement else { return }
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
-                guard binder(buffer, fields, header, statement) else { return }
+                guard bind(buffer, fields, statement) else { return }
                 guard sqlite3_step(statement) == SQLITE_DONE else {
                     throw ImportError.sqlFailed(String(cString: sqlite3_errmsg(db)))
                 }
@@ -180,9 +194,25 @@ nonisolated struct GTFSFeedImporter {
             guard rowIndex > 0, let statement else { return }
             sqlite3_reset(statement)
             sqlite3_clear_bindings(statement)
-            guard binder(buffer, fields, header, statement) else { return }
+            guard bind(buffer, fields, statement) else { return }
             guard sqlite3_step(statement) == SQLITE_DONE else {
                 throw ImportError.sqlFailed(String(cString: sqlite3_errmsg(db)))
+            }
+        }
+
+        // Skipping one bad point would draw a false line across the gap.
+        if !invalidShapeIds.isEmpty {
+            var deletion: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "DELETE FROM shapes WHERE shape_id = ?", -1, &deletion, nil) == SQLITE_OK else {
+                throw ImportError.sqlFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(deletion) }
+            for id in invalidShapeIds {
+                sqlite3_reset(deletion)
+                sqlite3_bind_text(deletion, 1, (id as NSString).utf8String, -1, nil)
+                guard sqlite3_step(deletion) == SQLITE_DONE else {
+                    throw ImportError.sqlFailed(String(cString: sqlite3_errmsg(db)))
+                }
             }
         }
     }
@@ -215,6 +245,14 @@ nonisolated struct GTFSFeedImporter {
         func field(_ fields: [Range<Int>], _ header: [String: Int], _ name: String) -> Range<Int>? {
             guard let index = header[name], index < fields.count else { return nil }
             return fields[index]
+        }
+
+        func coordinate(_ buffer: UnsafeRawBufferPointer, _ range: Range<Int>) -> Double? {
+            let raw = buffer.string(range)
+            guard let pattern = Self.coordinatePattern,
+                  pattern.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)) != nil
+            else { return nil }
+            return Double(raw)
         }
 
         switch fileName {
@@ -262,7 +300,7 @@ nonisolated struct GTFSFeedImporter {
         case "trips.txt":
             try prepare("""
                 INSERT OR REPLACE INTO trips
-                (trip_id, route_id, service_id, trip_headsign, direction_id) VALUES (?, ?, ?, ?, ?)
+                (trip_id, route_id, service_id, trip_headsign, direction_id, shape_id) VALUES (?, ?, ?, ?, ?, ?)
                 """)
             return { buffer, fields, header, stmt in
                 guard let id = field(fields, header, "trip_id"), !id.isEmpty,
@@ -275,6 +313,31 @@ nonisolated struct GTFSFeedImporter {
                 text(buffer, serviceId, stmt, 3)
                 text(buffer, field(fields, header, "trip_headsign") ?? (0..<0), stmt, 4)
                 sqlite3_bind_int(stmt, 5, Int32(field(fields, header, "direction_id").flatMap { buffer.int($0) } ?? 0))
+                text(buffer, field(fields, header, "shape_id") ?? (0..<0), stmt, 6)
+                return true
+            }
+
+        case "shapes.txt":
+            try prepare("""
+                INSERT INTO shapes (shape_id, shape_pt_lat, shape_pt_lon, shape_pt_sequence)
+                VALUES (?, ?, ?, ?)
+                """)
+            return { buffer, fields, header, stmt in
+                guard let id = field(fields, header, "shape_id"), !id.isEmpty,
+                      let latRange = field(fields, header, "shape_pt_lat"),
+                      let lonRange = field(fields, header, "shape_pt_lon"),
+                      let sequenceRange = field(fields, header, "shape_pt_sequence"),
+                      let latitude = coordinate(buffer, latRange), let longitude = coordinate(buffer, lonRange),
+                      !sequenceRange.isEmpty,
+                      sequenceRange.allSatisfy({ buffer[$0] >= 48 && buffer[$0] <= 57 }),
+                      let sequence = Int32(buffer.string(sequenceRange)),
+                      latitude.isFinite, longitude.isFinite,
+                      (-90...90).contains(latitude), (-180...180).contains(longitude)
+                else { return false }
+                text(buffer, id, stmt, 1)
+                sqlite3_bind_double(stmt, 2, latitude)
+                sqlite3_bind_double(stmt, 3, longitude)
+                sqlite3_bind_int(stmt, 4, sequence)
                 return true
             }
 
@@ -436,7 +499,14 @@ nonisolated struct GTFSFeedImporter {
             route_id TEXT NOT NULL,
             service_id TEXT NOT NULL,
             trip_headsign TEXT,
-            direction_id INTEGER DEFAULT 0
+            direction_id INTEGER DEFAULT 0,
+            shape_id TEXT
+        );
+        CREATE TABLE shapes (
+            shape_id TEXT NOT NULL,
+            shape_pt_lat REAL NOT NULL,
+            shape_pt_lon REAL NOT NULL,
+            shape_pt_sequence INTEGER NOT NULL
         );
         CREATE TABLE stop_times (
             trip_id TEXT NOT NULL,
@@ -467,5 +537,6 @@ nonisolated struct GTFSFeedImporter {
         CREATE INDEX idx_trips_service ON trips(service_id);
         CREATE INDEX idx_stops_location ON stops(stop_lat, stop_lon);
         CREATE INDEX idx_calendar_dates_date ON calendar_dates(date);
+        CREATE INDEX idx_shapes_id_sequence ON shapes(shape_id, shape_pt_sequence);
         """
 }

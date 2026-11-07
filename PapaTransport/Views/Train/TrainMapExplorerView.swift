@@ -11,7 +11,7 @@ struct TrainMapExplorerView: View {
     let statusMessage: String?
     let statusDetail: String?
 
-    @AppStorage("trainPlannedWorksMinimized") private var isPlannedWorksMinimized = false
+    @AppStorage("trainPlannedWorksMinimized") private var isPlannedWorksMinimized = true
     @Environment(\.themePalette) private var palette
 
     @State private var nearbyInfo: BusInfo
@@ -22,12 +22,16 @@ struct TrainMapExplorerView: View {
     @State private var lastQueriedRegion: MKCoordinateRegion?
     @State private var userCoordinate: CLLocationCoordinate2D?
     @State private var reloadTask: Task<Void, Never>?
+    @State private var boardReloadGeneration = 0
+    @State private var requestedRegion: MKCoordinateRegion?
     @State private var hasBootstrapped = false
     @State private var isLoading = false
     @State private var currentRegion: MKCoordinateRegion?
     @State private var errorMessage: String?
     @State private var showAllPlannedWorks = false
     @State private var liveVehicles: [LiveVehicle] = []
+    @State private var routeSelection = MapRouteSelection()
+    @State private var sheetPresentation = MapSheetPresentation()
 
     private let provider: BusProvider
     private static let autoRefreshInterval: Duration = .seconds(60)
@@ -85,6 +89,23 @@ struct TrainMapExplorerView: View {
         favouriteStops
     }
 
+    private var favouriteStopsOutsideNearby: [NearbyBusStop] {
+        let nearbyIDs = Set(displayedNearbyStops.map(\.id))
+        return displayedFavouriteStops.filter { !nearbyIDs.contains($0.id) }
+    }
+
+    private var mapStops: [NearbyBusStop] {
+        (displayedNearbyStops + displayedFavouriteStops).uniqueStops
+    }
+
+    private var peekDeparture: MapPeekDeparture? {
+        guard let next = mapStops.nextMapDeparture(selectedStopID: selectedStopID) else { return nil }
+        return MapPeekDeparture(departure: next.departure, stopName: next.stop.stopName) {
+            selectDeparture(next.departure, at: next.stop.id)
+            sheetPresentation.showDepartures(at: next.stop.id)
+        }
+    }
+
     /// 50 km guard: ~0.45° of latitude ≈ 50 km. Longitude degrees vary by latitude
     /// but using the same threshold is a safe, simple approximation for SEQ.
     private static let maxSpanDegrees: Double = 0.45
@@ -109,7 +130,10 @@ struct TrainMapExplorerView: View {
             isLoading: isLoading,
             onOpenSettings: onOpenSettings,
             onRecenter: recenterOnUser,
-            onRefresh: { await refreshAll() }
+            onRefresh: { await refreshAll() },
+            presentation: sheetPresentation,
+            departureListFocusID: selectedStopID,
+            peekDeparture: peekDeparture
         ) {
             mapCard
         } headerContent: {
@@ -125,6 +149,21 @@ struct TrainMapExplorerView: View {
         }
         .onDisappear {
             reloadTask?.cancel()
+            boardReloadGeneration &+= 1
+            requestedRegion = nil
+            isLoading = false
+        }
+        .onChange(of: selectedStopID) { _, stopId in
+            selectMapStop(stopId)
+        }
+        .onChange(of: nearbyInfo.id) { _, _ in
+            routeSelection.reconcile(with: mapStops)
+        }
+        .onChange(of: displayedFavouriteStops.map { $0.departures.map(\.id) }) { _, _ in
+            routeSelection.reconcile(with: mapStops)
+        }
+        .task(id: routeSelection.selection?.geometryID) {
+            await routeSelection.load(using: routeService)
         }
         .sheet(item: $selectedTripRequest) { request in
             TrainTripDetailSheet(request: request)
@@ -138,11 +177,15 @@ struct TrainMapExplorerView: View {
     @ViewBuilder
     private var headerPill: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(isZoomedOutTooFar
+            if routeSelection.selection != nil {
+                MapRouteSelectionControls(route: routeSelection, onShowDetails: showSelectedTrip)
+            } else {
+                Text(isZoomedOutTooFar
                  ? "Zoom in (within ~50 km) to load train stations."
-                 : "Pan the map to load train stations in the visible area.")
+                 : "Tap a station to see its departures. Pan to find other stations.")
                 .font(.transitCaption)
                 .foregroundStyle(palette.textSecondary)
+            }
 
             if let errorMessage, !errorMessage.isEmpty {
                 Text(errorMessage)
@@ -155,6 +198,9 @@ struct TrainMapExplorerView: View {
 
     @ViewBuilder
     private var sheetSections: some View {
+        if routeSelection.selection != nil {
+            MapRouteSelectionControls(route: routeSelection, onShowDetails: showSelectedTrip)
+        }
         GTFSFeedWarningBanner(provider: provider)
 
         if let statusMessage, !statusMessage.isEmpty {
@@ -186,27 +232,43 @@ struct TrainMapExplorerView: View {
     }
 
     private var mapCard: some View {
-        Map(position: $cameraPosition, selection: $selectedStopID) {
+        let stops = mapStops
+        let matchingStopIDs = routeSelection.matchingStopIDs(in: stops)
+        return Map(position: $cameraPosition) {
             UserAnnotation()
 
-            ForEach(displayedNearbyStops) { stop in
-                Annotation(stop.stopName, coordinate: stop.coordinate, anchor: .bottom) {
-                    TrainStationMapPin(
-                        stop: stop,
-                        isSelected: selectedStopID == stop.id,
-                        accentColor: palette.accent
-                    )
-                }
-                .tag(stop.id)
+            ForEach(routeSelection.paths.indices, id: \.self) { index in
+                MapPolyline(coordinates: routeSelection.paths[index])
+                    .stroke(palette.info, lineWidth: 5)
             }
 
-            // Untagged so they stay out of the stop-selection binding.
+            ForEach(stops) { stop in
+                Annotation(stop.stopName, coordinate: stop.coordinate, anchor: .bottom) {
+                    Button {
+                        showStationDepartures(stop.id)
+                    } label: {
+                        TrainStationMapPin(
+                            stop: stop,
+                            isSelected: selectedStopID == stop.id,
+                            accentColor: palette.accent
+                        )
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(stop.stopName) station")
+                    .accessibilityHint("Opens this station's departures.")
+                    .opacity(routeSelection.selection == nil || matchingStopIDs.contains(stop.id) ? 1 : 0.4)
+                }
+            }
+
             ForEach(vehicleAnnotations) { annotation in
                 Annotation("", coordinate: annotation.vehicle.coordinate) {
                     LiveVehicleMapPin(
                         vehicle: annotation.vehicle,
                         onTap: annotation.isTappable ? { openTrip(annotation) } : nil
                     )
+                    .opacity(routeSelection.selection == nil || annotation.vehicle.tripId == routeSelection.selection?.departure.tripId ? 1 : 0.3)
                 }
                 .annotationTitles(.hidden)
             }
@@ -222,6 +284,9 @@ struct TrainMapExplorerView: View {
                       || region.span.longitudeDelta > TrainMapExplorerView.maxSpanDegrees
             if tooFar {
                 reloadTask?.cancel()
+                boardReloadGeneration &+= 1
+                requestedRegion = nil
+                isLoading = false
                 nearbyInfo = Self.emptyBoard(provider: provider)
                 return
             }
@@ -246,28 +311,32 @@ struct TrainMapExplorerView: View {
                 )
                 .font(.transitCaption)
                 .foregroundStyle(palette.warning)
-            } else if let errorMessage, !errorMessage.isEmpty {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.transitCaption)
-                    .foregroundStyle(palette.warning)
             } else if displayedNearbyStops.isEmpty && displayedFavouriteStops.isEmpty {
-                Label(
-                    "No train stations were found in the visible map area, and no favourites currently have departures.",
-                    systemImage: "tram.fill"
-                )
-                .font(.transitCaption)
-                .foregroundStyle(palette.textSecondary)
+                if isLoading {
+                    HStack {
+                        ProgressView()
+                        Text("Loading station departures…")
+                    }
+                    .font(.transitBody)
+                } else {
+                    Label(
+                        "No train stations were found in the visible map area, and no favourites currently have departures.",
+                        systemImage: "tram.fill"
+                    )
+                    .font(.transitCaption)
+                    .foregroundStyle(palette.textSecondary)
+                }
             } else {
                 if !displayedNearbyStops.isEmpty {
                     stationListSection(
                         title: "In View",
                         systemImage: "location.fill",
                         accentColor: palette.textSecondary,
-                        stops: displayedNearbyStops
+                        stops: mapStops.filter { stop in displayedNearbyStops.contains { $0.id == stop.id } }
                     )
                 }
 
-                if !displayedFavouriteStops.isEmpty {
+                if !favouriteStopsOutsideNearby.isEmpty {
                     if !displayedNearbyStops.isEmpty {
                         Divider()
                     }
@@ -276,7 +345,7 @@ struct TrainMapExplorerView: View {
                         title: "Favourites",
                         systemImage: "star.fill",
                         accentColor: palette.accentText,
-                        stops: displayedFavouriteStops
+                        stops: favouriteStopsOutsideNearby
                     )
                 }
             }
@@ -297,12 +366,16 @@ struct TrainMapExplorerView: View {
         ForEach(stops) { stop in
             TrainStationSection(
                 stop: stop,
-                isExpanded: selectedStopID == stop.id
+                isExpanded: selectedStopID == stop.id,
+                selectedDeparture: routeSelection.selection,
+                isRefreshing: isLoading,
+                revealID: sheetPresentation.revealID
             ) {
                 toggleSelection(for: stop.id)
             } onSelectDeparture: { departure in
-                selectedTripRequest = TrainTripRequest(stopId: stop.id, departure: departure, provider: provider)
+                showDepartureDetails(departure, at: stop.id)
             }
+            .id("stop:\(stop.id)")
         }
     }
 
@@ -399,9 +472,48 @@ struct TrainMapExplorerView: View {
 
     private func openTrip(_ annotation: VehicleAnnotation) {
         guard let stopId = annotation.stopId, let departure = annotation.departure else { return }
+        selectDeparture(departure, at: stopId)
+    }
+
+    private var routeService: any BusDataProviding {
+        provider == .queenslandTrainTransLink ? QLDTrainMapService.shared : PTVBoardService.victorianTrain
+    }
+
+    private func selectDeparture(_ departure: BusDeparture, at stopId: String) {
+        guard let stop = mapStops.first(where: { $0.id == stopId }) else { return }
+        selectedStopID = stopId
+        routeSelection.select(MapDepartureSelection(provider: provider, stopId: stopId,
+                                                   stopName: stop.stopName, departure: departure))
+    }
+
+    private func showDepartureDetails(_ departure: BusDeparture, at stopId: String) {
+        selectDeparture(departure, at: stopId)
+        selectedTripRequest = TrainTripRequest(stopId: stopId, departure: departure, provider: provider)
+    }
+
+    private func selectMapStop(_ stopId: String?) {
+        guard let stopId, let stop = mapStops.first(where: { $0.id == stopId }) else {
+            routeSelection.clear()
+            return
+        }
+        guard routeSelection.selection != nil else { return }
+        guard routeSelection.selection?.stopId != stopId else { return }
+        let departure = stop.departures.first { $0.tripId == routeSelection.selection?.departure.tripId }
+        if let departure { selectDeparture(departure, at: stopId) }
+        else { routeSelection.clear() }
+    }
+
+    private func showStationDepartures(_ stopId: String) {
+        selectedStopID = stopId
+        if routeSelection.selection?.stopId != stopId { routeSelection.clear() }
+        sheetPresentation.showDepartures(at: stopId)
+    }
+
+    private func showSelectedTrip() {
+        guard let selection = routeSelection.selection else { return }
         selectedTripRequest = TrainTripRequest(
-            stopId: stopId,
-            departure: departure,
+            stopId: selection.stopId,
+            departure: selection.departure,
             provider: provider
         )
     }
@@ -453,11 +565,14 @@ struct TrainMapExplorerView: View {
 
     @MainActor
     private func refreshAll() async {
-        await onRefresh()
-        if let lastQueriedRegion {
-            await reloadBoard(for: lastQueriedRegion)
+        async let statusRefresh: Void = onRefresh()
+        if let region = currentRegion ?? lastQueriedRegion,
+           region.span.latitudeDelta <= Self.maxSpanDegrees,
+           region.span.longitudeDelta <= Self.maxSpanDegrees {
+            await reloadBoard(for: region)
         }
         await refreshLiveVehicles()
+        await statusRefresh
     }
 
     private func scheduleReload(for region: MKCoordinateRegion) {
@@ -465,14 +580,17 @@ struct TrainMapExplorerView: View {
         guard region.span.latitudeDelta <= Self.maxSpanDegrees,
               region.span.longitudeDelta <= Self.maxSpanDegrees else { return }
 
+        if let reference = requestedRegion ?? lastQueriedRegion,
+           !regionNeedsRefresh(region, comparedTo: reference) { return }
+
         reloadTask?.cancel()
+        boardReloadGeneration &+= 1
+        let generation = boardReloadGeneration
+        requestedRegion = region
+        isLoading = true
         reloadTask = Task {
             try? await Task.sleep(for: .milliseconds(1400))
-            guard !Task.isCancelled else { return }
-
-            if let lastQueriedRegion, !regionNeedsRefresh(region, comparedTo: lastQueriedRegion) {
-                return
-            }
+            guard !Task.isCancelled, generation == boardReloadGeneration else { return }
 
             await reloadBoard(for: region)
         }
@@ -488,40 +606,51 @@ struct TrainMapExplorerView: View {
         }
     }
 
+    @MainActor
     private func reloadBoard(for region: MKCoordinateRegion) async {
-        await MainActor.run {
-            isLoading = true
-            errorMessage = nil
+        guard !Task.isCancelled else { return }
+        boardReloadGeneration &+= 1
+        let generation = boardReloadGeneration
+        requestedRegion = region
+        isLoading = true
+        errorMessage = nil
+        defer {
+            if generation == boardReloadGeneration {
+                isLoading = false
+                requestedRegion = nil
+            }
         }
 
         do {
             let reference = try await referenceCoordinate()
+            guard !Task.isCancelled, generation == boardReloadGeneration else { return }
             let bounds = regionBounds(for: region)
 
             async let regionInfoTask = fetchRegionInfo(bounds: bounds, reference: reference)
             async let favouriteInfoTask = fetchFavouriteInfo(reference: reference)
 
             let updatedInfo = try await regionInfoTask
-            let favouriteInfo = try await favouriteInfoTask
+            guard !Task.isCancelled, generation == boardReloadGeneration else { return }
 
-            await MainActor.run {
-                nearbyInfo = updatedInfo
-                favouriteStops = favouriteInfo.favouriteStops
-                lastQueriedRegion = region
-                synchronizeSelection(
-                    with: updatedInfo.nearbyStops.map(\.id) + favouriteInfo.favouriteStops.map(\.id)
-                )
-                isLoading = false
-            }
+            nearbyInfo = updatedInfo
+            lastQueriedRegion = region
+            synchronizeSelection(
+                with: updatedInfo.nearbyStops.map(\.id) + favouriteStops.map(\.id)
+            )
+
+            let favouriteInfo = try await favouriteInfoTask
+            guard !Task.isCancelled, generation == boardReloadGeneration else { return }
+            favouriteStops = favouriteInfo.favouriteStops
+            synchronizeSelection(
+                with: updatedInfo.nearbyStops.map(\.id) + favouriteStops.map(\.id)
+            )
         } catch {
-            await MainActor.run {
-                if error is LocationError {
-                    nearbyInfo = .noLocation(provider: provider)
-                    favouriteStops = []
-                }
-                errorMessage = error.localizedDescription
-                isLoading = false
+            guard !Task.isCancelled, generation == boardReloadGeneration else { return }
+            if error is LocationError {
+                nearbyInfo = .noLocation(provider: provider)
+                favouriteStops = []
             }
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -779,11 +908,14 @@ private struct TrainPlannedWorksBoard: View {
 private struct TrainStationSection: View {
     let stop: NearbyBusStop
     let isExpanded: Bool
+    let selectedDeparture: MapDepartureSelection?
+    let isRefreshing: Bool
+    let revealID: UUID
     let onToggleExpanded: () -> Void
     let onSelectDeparture: (BusDeparture) -> Void
 
     @Environment(\.themePalette) private var palette
-    @State private var expandedDirectionLabels: Set<String> = []
+    @State private var collapsedDirectionLabels: Set<String> = []
 
     private var directionGroups: [DepartureDirectionGroup] {
         stop.departures.groupedByDirection()
@@ -799,6 +931,10 @@ private struct TrainStationSection: View {
                             .foregroundStyle(palette.textPrimary)
                             .multilineTextAlignment(.leading)
 
+                        Text("\(stop.departures.count) departures · next 2 hours")
+                            .font(.transitCaption)
+                            .foregroundStyle(palette.textSecondary)
+
                         if let code = stop.stopCode, !code.isEmpty {
                             Text("Station #\(code)")
                                 .font(.caption)
@@ -809,7 +945,7 @@ private struct TrainStationSection: View {
                     Spacer(minLength: 8)
 
                     HStack(spacing: 10) {
-                        Text("\(stop.distanceMeters)m away")
+                        Text(formattedStopDistance(stop.distanceMeters))
                             .font(.transitBadge)
                             .foregroundStyle(isExpanded ? palette.buttonForeground : palette.textSecondary)
                             .padding(.horizontal, 10)
@@ -828,15 +964,24 @@ private struct TrainStationSection: View {
             if isExpanded {
                 Divider()
 
+                if isRefreshing {
+                    HStack {
+                        ProgressView()
+                        Text(directionGroups.isEmpty ? "Loading departures…" : "Updating departures…")
+                    }
+                    .font(.transitCaption)
+                    .foregroundStyle(palette.textSecondary)
+                }
+
                 if directionGroups.isEmpty {
-                    if stop.departureDataAvailability == .unavailable {
+                    if !isRefreshing && stop.departureDataAvailability == .unavailable {
                         Label(
                             "Cached station location shown. Departures are unavailable until a connection returns.",
                             systemImage: "wifi.slash"
                         )
                         .font(.caption)
                         .foregroundStyle(palette.warning)
-                    } else {
+                    } else if !isRefreshing {
                         Text("No departures found for this station within \("next 2 hours").")
                             .font(.caption)
                             .foregroundStyle(palette.textSecondary)
@@ -846,7 +991,9 @@ private struct TrainStationSection: View {
                     ForEach(directionGroups) { group in
                         DepartureGroupSection(
                             group: group,
-                            isExpanded: expandedDirectionLabels.contains(group.id)
+                            isExpanded: !collapsedDirectionLabels.contains(group.id),
+                            selectedDeparture: selectedDeparture,
+                            stopId: stop.id
                         ) {
                             toggleDirection(group.id)
                         } onSelectDeparture: { departure in
@@ -872,21 +1019,29 @@ private struct TrainStationSection: View {
                     .frame(height: 1)
             }
         }
+        .onChange(of: directionGroups.map(\.id), initial: true) { _, ids in
+            collapsedDirectionLabels = Set(ids)
+        }
         .onChange(of: isExpanded) { _, expanded in
-            if !expanded {
-                expandedDirectionLabels.removeAll()
-            }
+            if expanded { collapseAllDirections() }
+        }
+        .onChange(of: revealID) { _, _ in
+            if isExpanded { collapseAllDirections() }
         }
     }
 
     private func toggleDirection(_ label: String) {
         withAnimation(.easeInOut(duration: 0.2)) {
-            if expandedDirectionLabels.contains(label) {
-                expandedDirectionLabels.remove(label)
+            if collapsedDirectionLabels.contains(label) {
+                collapsedDirectionLabels.remove(label)
             } else {
-                expandedDirectionLabels.insert(label)
+                collapsedDirectionLabels.insert(label)
             }
         }
+    }
+
+    private func collapseAllDirections() {
+        collapsedDirectionLabels = Set(directionGroups.map(\.id))
     }
 }
 
@@ -906,6 +1061,7 @@ private struct TrainTripDetailSheet: View {
     @State private var tripDetail: BusTripDetail?
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var isStopsExpanded = false
 
     var body: some View {
         NavigationStack {
@@ -944,6 +1100,7 @@ private struct TrainTripDetailSheet: View {
             }
         }
         .task(id: request.id) {
+            isStopsExpanded = false
             await loadTripDetail()
         }
     }
@@ -983,7 +1140,7 @@ private struct TrainTripDetailSheet: View {
             trainMetric(
                 title: "Selected Station",
                 value: tripDetail.selectedStopName,
-                secondary: "Stop sequence \(tripDetail.selectedStopSequence)"
+                secondary: selectedStationSecondary(tripDetail)
             )
 
             trainMetric(
@@ -1008,15 +1165,35 @@ private struct TrainTripDetailSheet: View {
     @ViewBuilder
     private func stopsCard(_ tripDetail: BusTripDetail) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Stops From Here")
-                .font(.transitHeadline)
-                .foregroundStyle(palette.textPrimary)
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isStopsExpanded.toggle()
+                }
+            } label: {
+                HStack {
+                    Text("Stops From Here")
+                        .font(.transitHeadline)
+                        .foregroundStyle(palette.textPrimary)
+                    Spacer()
+                    Text(isStopsExpanded ? "Hide stops" : "Show stops")
+                        .font(.transitCaption)
+                        .foregroundStyle(palette.textSecondary)
+                    Image(systemName: isStopsExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.bold())
+                        .foregroundStyle(palette.textSecondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isStopsExpanded ? "Hide stops from here" : "Show stops from here")
 
-            ForEach(Array(tripDetail.stopsFromSelected.enumerated()), id: \.element.id) { index, stop in
-                TripStopRow(
-                    stop: stop,
-                    isLast: index == tripDetail.stopsFromSelected.count - 1
-                )
+            if isStopsExpanded {
+                ForEach(Array(tripDetail.stopsFromSelected.enumerated()), id: \.element.id) { index, stop in
+                    TripStopRow(
+                        stop: stop,
+                        isLast: index == tripDetail.stopsFromSelected.count - 1
+                    )
+                }
             }
         }
         .padding(16)
@@ -1057,6 +1234,14 @@ private struct TrainTripDetailSheet: View {
             return "Predicted \(terminalPredictedTime)"
         }
         return "Arrival time unavailable"
+    }
+
+    private func selectedStationSecondary(_ tripDetail: BusTripDetail) -> String {
+        let stopSequence = "Stop sequence \(tripDetail.selectedStopSequence)"
+        let platform = request.departure.platform?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let platform, !platform.isEmpty else { return stopSequence }
+        return "Platform \(platform) • \(stopSequence)"
     }
 
     private func loadTripDetail() async {

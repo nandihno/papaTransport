@@ -11,6 +11,8 @@ struct DepartureRow: View {
     let showsRouteBadge: Bool
     let isInteractive: Bool
     let onTap: () -> Void
+    var isSelected: Bool = false
+    var highlightsRoute: Bool = false
 
     @Environment(\.themePalette) private var palette
 
@@ -18,11 +20,15 @@ struct DepartureRow: View {
         departure: BusDeparture,
         showsRouteBadge: Bool = true,
         isInteractive: Bool = true,
+        isSelected: Bool = false,
+        highlightsRoute: Bool = false,
         onTap: @escaping () -> Void = {}
     ) {
         self.departure = departure
         self.showsRouteBadge = showsRouteBadge
         self.isInteractive = isInteractive
+        self.isSelected = isSelected
+        self.highlightsRoute = highlightsRoute
         self.onTap = onTap
     }
 
@@ -38,43 +44,44 @@ struct DepartureRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityAddTraits(isInteractive ? .isButton : [])
-        .accessibilityHint(isInteractive ? "Shows the stops remaining on this trip." : "")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityHint(isInteractive ? (highlightsRoute ? "Shows trip details and highlights this service on the map." : "Shows the stops remaining on this trip.") : "")
     }
 
     private var rowContent: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 8) {
             Circle()
                 .fill(statusColor)
                 .frame(width: 9, height: 9)
-
-            if showsRouteBadge {
-                Text(routeBadgeText)
-                    .font(.transitLabel.monospacedDigit())
-                    .foregroundStyle(palette.buttonForeground)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .frame(minWidth: 40)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(palette.buttonBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-            }
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(primaryTitle)
                     .font(.transitBody)
                     .foregroundStyle(palette.textPrimary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                detailLine
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if showsRouteBadge {
+                        Text(routeBadgeText)
+                            .font(.transitBadge.monospacedDigit())
+                            .foregroundStyle(palette.buttonForeground)
+                            .lineLimit(1)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(palette.buttonBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+
+                    detailLine
+                }
             }
-
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
 
             HStack(alignment: .lastTextBaseline, spacing: 3) {
                 let duration = departure.minutesAway.durationComponents
                 Text(duration.value)
-                    .font(.transitDisplay.monospacedDigit())
+                    .font(.transitTitle.monospacedDigit())
                     .foregroundStyle(palette.textPrimary)
                 if !duration.unit.isEmpty {
                     Text(duration.unit)
@@ -82,6 +89,7 @@ struct DepartureRow: View {
                         .foregroundStyle(palette.textSecondary)
                 }
             }
+            .fixedSize()
 
             if isInteractive {
                 Image(systemName: "chevron.right")
@@ -89,46 +97,35 @@ struct DepartureRow: View {
                     .foregroundStyle(palette.textTertiary)
             }
         }
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
         .padding(.vertical, 6)
+        .background(isSelected ? palette.info.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 10))
     }
 
-    @ViewBuilder
     private var detailLine: some View {
-        HStack(spacing: 4) {
-            if let platform = departure.platform, !platform.isEmpty {
-                segment("Plat \(platform)", color: palette.textSecondary)
-            }
-
-            if departure.expressStopCount > 0 {
-                segment("Express", color: palette.accentText)
-            }
-
-            // Queensland only — derived from the vehicle's reported position.
-            // A stronger signal than the countdown alone: it says the service
-            // exists and where it actually is.
-            if let stopsAway = departure.stopsAwayDescription {
-                segment(stopsAway, color: palette.info)
-            }
-
-            segment(timeText, color: hasDelay ? statusColor : palette.textSecondary, isLast: !hasDelay)
-
-            if hasDelay {
-                segment(delayText, color: statusColor, isLast: true)
-            }
+        var segments: [(String, Color)] = []
+        if let platform = departure.platform, !platform.isEmpty {
+            segments.append(("Plat \(platform)", palette.textSecondary))
         }
-        .lineLimit(1)
-    }
-
-    @ViewBuilder
-    private func segment(_ text: String, color: Color, isLast: Bool = false) -> some View {
-        Text(text)
+        if departure.expressStopCount > 0 {
+            segments.append(("Express", palette.accentText))
+        }
+        if let stopsAway = departure.stopsAwayDescription {
+            segments.append((stopsAway, palette.info))
+        }
+        segments.append((timeText, hasDelay ? statusColor : palette.textSecondary))
+        if hasDelay {
+            segments.append((delayText, statusColor))
+        }
+        let text = segments.enumerated().reduce(Text("")) { result, item in
+            let separator = item.offset == 0 ? Text("") : Text(" · ").foregroundColor(palette.textTertiary)
+            let segment = Text(item.element.0).foregroundColor(item.element.1)
+            return Text("\(result)\(separator)\(segment)")
+        }
+        return text
             .font(.transitBadge)
-            .foregroundStyle(color)
-        if !isLast {
-            Text("·")
-                .font(.transitBadge)
-                .foregroundStyle(palette.textTertiary)
-        }
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Late/early only — `onTime` can still carry a few seconds of
@@ -172,6 +169,8 @@ struct DepartureRow: View {
         if let platform = departure.platform, !platform.isEmpty { parts.append("Platform \(platform)") }
         if departure.expressStopCount > 0 { parts.append("Express") }
         if let stopsAway = departure.stopsAwayDescription { parts.append(stopsAway) }
+        parts.append("Scheduled \(departure.scheduledTime)")
+        if let predicted = departure.predictedTime, hasDelay { parts.append("Expected \(predicted)") }
         parts.append("\(departure.minutesAway) minutes")
         parts.append(departure.status.rawValue)
         if hasDelay { parts.append(delayText) }

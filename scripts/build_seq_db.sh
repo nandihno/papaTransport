@@ -68,6 +68,19 @@ PRAGMA synchronous = OFF;
 .import '$WORK/gtfs/calendar_dates.txt' raw_calendar_dates
 SQL
 
+# Shapes and trips.shape_id are optional GTFS fields.
+if [[ -f "$WORK/gtfs/shapes.txt" ]]; then
+    sqlite3 "$DB" <<SQL
+.mode csv
+.import '$WORK/gtfs/shapes.txt' raw_shapes
+SQL
+else
+    sqlite3 "$DB" "CREATE TABLE raw_shapes (shape_id TEXT, shape_pt_lat TEXT, shape_pt_lon TEXT, shape_pt_sequence TEXT);"
+fi
+if [[ $(sqlite3 "$DB" "SELECT COUNT(*) FROM pragma_table_info('raw_trips') WHERE name = 'shape_id';") -eq 0 ]]; then
+    sqlite3 "$DB" "ALTER TABLE raw_trips ADD COLUMN shape_id TEXT;"
+fi
+
 sqlite3 "$DB" <<'SQL'
 PRAGMA journal_mode = OFF;
 PRAGMA synchronous = OFF;
@@ -93,7 +106,14 @@ CREATE TABLE trips (
     route_id TEXT NOT NULL,
     service_id TEXT NOT NULL,
     trip_headsign TEXT,
-    direction_id INTEGER DEFAULT 0
+    direction_id INTEGER DEFAULT 0,
+    shape_id TEXT
+);
+CREATE TABLE shapes (
+    shape_id TEXT NOT NULL,
+    shape_pt_lat REAL NOT NULL,
+    shape_pt_lon REAL NOT NULL,
+    shape_pt_sequence INTEGER NOT NULL
 );
 CREATE TABLE stop_times (
     trip_id TEXT NOT NULL,
@@ -132,8 +152,36 @@ FROM raw_routes;
 
 INSERT OR REPLACE INTO trips
 SELECT trip_id, route_id, service_id, NULLIF(trip_headsign, ''),
-       CAST(NULLIF(direction_id, '') AS INTEGER)
+       CAST(NULLIF(direction_id, '') AS INTEGER), NULLIF(trim(shape_id), '')
 FROM raw_trips;
+
+-- Validate numeric tokens before CAST: SQLite otherwise turns garbage into 0.
+-- Strict JSON decimal numbers match the on-device coordinate parser.
+CREATE TEMP TABLE normalized_shapes AS
+SELECT trim(shape_id) AS shape_id,
+       CASE WHEN json_valid(trim(shape_pt_lat)) THEN
+           CASE WHEN json_type(trim(shape_pt_lat)) IN ('integer', 'real')
+                THEN CAST(shape_pt_lat AS REAL) END END AS latitude,
+       CASE WHEN json_valid(trim(shape_pt_lon)) THEN
+           CASE WHEN json_type(trim(shape_pt_lon)) IN ('integer', 'real')
+                THEN CAST(shape_pt_lon AS REAL) END END AS longitude,
+       CASE WHEN trim(shape_pt_sequence) != ''
+                  AND trim(shape_pt_sequence) NOT GLOB '*[^0-9]*'
+                  AND CAST(shape_pt_sequence AS INTEGER) BETWEEN 0 AND 2147483647
+            THEN CAST(shape_pt_sequence AS INTEGER) END AS sequence
+FROM raw_shapes;
+CREATE TEMP TABLE invalid_shapes AS
+SELECT DISTINCT shape_id FROM normalized_shapes
+WHERE latitude IS NULL OR longitude IS NULL OR sequence IS NULL
+   OR latitude NOT BETWEEN -90 AND 90 OR longitude NOT BETWEEN -180 AND 180;
+
+-- Reject the entire shape to avoid connecting the points around a bad row.
+INSERT INTO shapes
+SELECT shape_id, latitude, longitude, sequence FROM normalized_shapes
+WHERE NULLIF(shape_id, '') IS NOT NULL
+  AND shape_id NOT IN (SELECT shape_id FROM invalid_shapes WHERE shape_id IS NOT NULL);
+DROP TABLE normalized_shapes;
+DROP TABLE invalid_shapes;
 
 -- HH:MM:SS -> seconds since midnight. Sliced from the right so both "7:05:00"
 -- and the after-midnight "24:04:00" parse correctly; blanks stay NULL.
@@ -173,6 +221,7 @@ UPDATE stops SET route_type = 3 WHERE stop_id IN (
 DROP TABLE raw_stops;
 DROP TABLE raw_routes;
 DROP TABLE raw_trips;
+DROP TABLE raw_shapes;
 DROP TABLE raw_stop_times;
 DROP TABLE raw_calendar;
 DROP TABLE raw_calendar_dates;
@@ -183,6 +232,7 @@ CREATE INDEX idx_trips_route ON trips(route_id);
 CREATE INDEX idx_trips_service ON trips(service_id);
 CREATE INDEX idx_stops_location ON stops(stop_lat, stop_lon);
 CREATE INDEX idx_calendar_dates_date ON calendar_dates(date);
+CREATE INDEX idx_shapes_id_sequence ON shapes(shape_id, shape_pt_sequence);
 
 VACUUM;
 -- Populates sqlite_stat1 so the planner picks the right index on the 2.7M-row
@@ -255,7 +305,7 @@ echo "==> Writing manifest.json"
     printf '  "validTo": "%s",\n' "$valid_to"
     printf '  "rowCounts": {\n'
     first=1
-    for t in stops routes trips stop_times calendar calendar_dates; do
+    for t in stops routes trips shapes stop_times calendar calendar_dates; do
         [[ $first -eq 1 ]] || printf ',\n'
         first=0
         printf '    "%s": %s' "$t" "$(sqlite3 "$DEST" "SELECT COUNT(*) FROM $t;")"

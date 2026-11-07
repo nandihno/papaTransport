@@ -66,7 +66,7 @@ struct LiveVehicleMapPin: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(accessibilityLabel)
-            .accessibilityHint("Shows the stops remaining on this service.")
+            .accessibilityHint("Highlights this service on the map and in the departure list.")
         } else {
             // Ambient only. Without this a screen full of Queensland vehicles —
             // most of which resolve to no board departure — puts hundreds of

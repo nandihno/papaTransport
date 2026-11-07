@@ -85,10 +85,11 @@ actor GTFSFeedRefreshService {
 
     private func performRefresh(force: Bool) async -> Bool {
         try? await GTFSDatabase.shared.ensureReady()
+        let needsGeometrySchema = await GTFSDatabase.shared.hasRouteGeometrySchema() == false
 
         if !force {
             guard let validity = await GTFSDatabase.shared.feedValidity(),
-                  validity.shouldRefresh()
+                  validity.shouldRefresh() || needsGeometrySchema
             else { return false }
 
             let defaults = UserDefaults.standard
@@ -106,7 +107,9 @@ actor GTFSFeedRefreshService {
         await report(stage: "Checking for timetable update", detail: "TransLink SEQ")
 
         do {
-            let validity = try await downloadAndImport(allowNotModified: true)
+            // An unchanged ZIP still needs importing when the installed schema
+            // predates shapes. Keep the old database if download/import fails.
+            let validity = try await downloadAndImport(allowNotModified: !needsGeometrySchema)
             guard let validity else {
                 // 304 — the published feed has not moved since the last import.
                 return false

@@ -220,6 +220,31 @@ final class PTVBoardService: TrainBoardProviding {
 
     // MARK: - Trip detail
 
+    func fetchRouteGeometry(for departure: BusDeparture) async throws -> [[CLLocationCoordinate2D]] {
+        do {
+            let response = try await PTVAPIClient.shared.get(
+                PTVEndpoint.pattern(
+                    runRef: departure.tripId,
+                    routeType: departure.isRegional ? .vline : primaryRouteType,
+                    includeGeopath: true
+                ),
+                as: PTVDeparturesResponse.self,
+                cacheFor: 300
+            )
+            let run = response.runs[departure.tripId]
+                ?? response.runs.values.first { $0.runRef == departure.tripId }
+            let geopaths = run?.geopath ?? []
+            let directionId = departure.directionId
+            // Long regional paths must not parse on the target's default main actor.
+            return await Task.detached(priority: .userInitiated) {
+                geopaths.flatMap { $0.coordinates(directionId: directionId) }
+            }.value
+        } catch let error as PTVAPIClient.PTVError {
+            if case .http(let status, _) = error, status == 404 { return [] }
+            throw error
+        }
+    }
+
     func fetchTripDetail(for departure: BusDeparture, stopId: String) async throws -> BusTripDetail {
         let response: PTVDeparturesResponse
         do {

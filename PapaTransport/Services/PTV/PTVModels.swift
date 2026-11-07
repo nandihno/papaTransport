@@ -292,6 +292,7 @@ nonisolated struct PTVRun: Decodable, Identifiable {
     let vehiclePosition: PTVVehiclePosition?
     /// Present only when the request asked for `expand=VehicleDescriptor`.
     let vehicleDescriptor: PTVVehicleDescriptor?
+    let geopath: [PTVGeopath]
 
     var id: String { runRef }
 
@@ -309,6 +310,7 @@ nonisolated struct PTVRun: Decodable, Identifiable {
         case expressStopCount = "express_stop_count"
         case vehiclePosition = "vehicle_position"
         case vehicleDescriptor = "vehicle_descriptor"
+        case geopath
     }
 
     init(from decoder: Decoder) throws {
@@ -323,6 +325,7 @@ nonisolated struct PTVRun: Decodable, Identifiable {
         expressStopCount = (try? c.decodeIfPresent(Int.self, forKey: .expressStopCount)) ?? 0
         vehiclePosition  = (try? c.decodeIfPresent(PTVVehiclePosition.self, forKey: .vehiclePosition)) ?? nil
         vehicleDescriptor = (try? c.decodeIfPresent(PTVVehicleDescriptor.self, forKey: .vehicleDescriptor)) ?? nil
+        geopath = (try? c.decodeIfPresent([PTVGeopath].self, forKey: .geopath)) ?? []
     }
 }
 

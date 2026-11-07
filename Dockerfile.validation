@@ -1,0 +1,4 @@
+FROM debian:bookworm-slim
+WORKDIR /validation
+COPY scripts/*.sh ./scripts/
+CMD ["/bin/bash", "-c", "for script in scripts/*.sh; do bash -n \"$script\" || exit; done"]

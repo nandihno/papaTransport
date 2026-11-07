@@ -1,6 +1,6 @@
 # PTV Timetable API — Integration Plan (Victorian Bus + Train)
 
-Status: **Complete — Victoria is served entirely by PTV; the Victorian databases are gone; static stop caching is implemented** · Last updated: 2026-08-07
+Status: **Complete — Victoria is served entirely by PTV; the Victorian databases are gone; static stop caching and selected-run route geometry are implemented** · Last updated: 2026-10-16
 
 This document covers introducing the official [PTV Timetable API v3](https://www.vic.gov.au/public-transport-timetable-api)
 as a data source for Victorian bus and Victorian train, alongside (and potentially
@@ -624,3 +624,24 @@ count and age, and clear the tile table plus `PTVAPIClient.clearCache()`.
 
 `TrainLinePickerView` refetches `website_data.json` (60 KB) every time the line
 picker opens, for a line list that effectively never changes.
+
+## 10. Selected-run route geometry (2026-10-16)
+
+UI Phase 4 adds an on-demand `/v3/pattern/run/{run_ref}/route_type/{rt}` request
+with `include_geopath=true` and Run expansion. The endpoint is separate from
+the normal departure-board request, uses the existing client throttle/backoff,
+and caches the response for five minutes. V/Line selections use route type 3.
+
+Live read-only probes and the [official PTV Swagger contract](https://timetableapi.ptv.vic.gov.au/swagger/ui/index)
+confirmed `runs[run_ref].geopath`: each entry has direction/validity fields and
+one or more path strings containing latitude/longitude pairs. `PTVGeopath`
+preserves separate segments and rejects malformed coordinates. Only matching,
+currently valid paths render; missing geometry and 404 patterns produce an empty
+result, while connection failures reach the UI's unavailable state. Parsing runs
+off the main actor because the target defaults to main-actor isolation.
+
+The sampled responses supplied only geometry valid from 2026-10-30 onward.
+Those paths correctly do not render on 2026-10-16; this is not evidence of
+currently valid geometry coverage across modes. The July claim in §8 that PTV
+has no vehicle coordinates is also historical; see CLAUDE.md's later measured
+vehicle-position support.

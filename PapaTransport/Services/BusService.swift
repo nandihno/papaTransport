@@ -40,6 +40,11 @@ nonisolated final class BusService: BusDataProviding {
 
     // MARK: - Public API
 
+    func fetchRouteGeometry(for departure: BusDeparture) async throws -> [[CLLocationCoordinate2D]] {
+        try await GTFSDatabase.shared.ensureReady()
+        return try await GTFSDatabase.shared.routeGeometry(tripId: departure.tripId)
+    }
+
     /// Fetch bus departure info for stops near the given location.
     /// This method orchestrates: GTFS DB readiness → nearby stops → schedule → RT overlay → alerts.
     func fetchBusInfo(latitude: Double, longitude: Double) async throws -> BusInfo {

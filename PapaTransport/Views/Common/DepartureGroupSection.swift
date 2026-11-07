@@ -6,6 +6,8 @@ import SwiftUI
 struct DepartureGroupSection: View {
     let group: DepartureDirectionGroup
     let isExpanded: Bool
+    var selectedDeparture: MapDepartureSelection? = nil
+    var stopId: String = ""
     let onToggleExpanded: () -> Void
     let onSelectDeparture: (BusDeparture) -> Void
 
@@ -56,9 +58,13 @@ struct DepartureGroupSection: View {
             .buttonStyle(.plain)
 
             if isExpanded {
-                VStack(alignment: .leading, spacing: 4) {
+                LazyVStack(alignment: .leading, spacing: 4) {
                     ForEach(group.departures) { departure in
-                        DepartureRow(departure: departure) {
+                        DepartureRow(
+                            departure: departure,
+                            isSelected: selectedDeparture?.matches(departure, at: stopId) == true,
+                            highlightsRoute: true
+                        ) {
                             onSelectDeparture(departure)
                         }
                     }
@@ -66,6 +72,15 @@ struct DepartureGroupSection: View {
                 .padding(.leading, 4)
             }
         }
+        .onChange(of: containsSelectedDeparture, initial: true) { _, selected in
+            if selected, !isExpanded {
+                onToggleExpanded()
+            }
+        }
+    }
+
+    private var containsSelectedDeparture: Bool {
+        group.departures.contains { selectedDeparture?.matches($0, at: stopId) == true }
     }
 }
 

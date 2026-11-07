@@ -16,6 +16,7 @@ actor GTFSDatabase {
     /// Cleared whenever the database is closed or reinstalled.
     private var cachedValidity: GTFSFeedValidity?
     private var routeShortNameCache: [String: String] = [:]
+    private var cachedGeometrySchemaAvailable: Bool?
 
     private let bundledDatabaseFileName = "gtfs_seq"
     private let bundledDatabaseExtension = "sqlite3"
@@ -931,6 +932,59 @@ actor GTFSDatabase {
         return results
     }
 
+    /// Older installed timetables omit shapes. They remain usable while a
+    /// background refresh upgrades the schema.
+    func hasRouteGeometrySchema() -> Bool {
+        if let cachedGeometrySchemaAvailable { return cachedGeometrySchemaAvailable }
+        guard let db else { return false }
+        var statement: OpaquePointer?
+        let sql = "SELECT s.shape_pt_lat FROM trips t JOIN shapes s ON s.shape_id = t.shape_id LIMIT 0"
+        let available = sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK
+        sqlite3_finalize(statement)
+        cachedGeometrySchemaAvailable = available
+        return available
+    }
+
+    func routeGeometry(tripId: String) throws -> [[CLLocationCoordinate2D]] {
+        guard let db else { throw GTFSDBError.notReady }
+        guard hasRouteGeometrySchema() else { return [] }
+        let sql = """
+            SELECT s.shape_pt_lat, s.shape_pt_lon, s.shape_pt_sequence
+            FROM trips t
+            JOIN shapes s ON s.shape_id = t.shape_id
+            WHERE t.trip_id = ?
+            ORDER BY s.shape_pt_sequence ASC
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (tripId as NSString).utf8String, -1, nil)
+        var coordinates: [CLLocationCoordinate2D] = []
+        var previousSequence: Int64 = -1
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            let latitude = sqlite3_column_double(statement, 0)
+            let longitude = sqlite3_column_double(statement, 1)
+            let sequence = sqlite3_column_int64(statement, 2)
+            guard [SQLITE_FLOAT, SQLITE_INTEGER].contains(sqlite3_column_type(statement, 0)),
+                  [SQLITE_FLOAT, SQLITE_INTEGER].contains(sqlite3_column_type(statement, 1)),
+                  sqlite3_column_type(statement, 2) == SQLITE_INTEGER,
+                  sequence > previousSequence, sequence <= Int32.max,
+                  latitude.isFinite, longitude.isFinite,
+                  (-90...90).contains(latitude), (-180...180).contains(longitude)
+            else { return [] }
+            coordinates.append(CLLocationCoordinate2D(latitude: latitude, longitude: longitude))
+            previousSequence = sequence
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else {
+            throw GTFSDBError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        return coordinates.count > 1 ? [coordinates] : []
+    }
+
     func tripPattern(tripId: String) throws -> [TripPatternStop] {
         guard let db else { throw GTFSDBError.notReady }
 
@@ -1169,6 +1223,7 @@ actor GTFSDatabase {
         cachedValidity = nil
         railStopIdCache = nil
         routeShortNameCache = [:]
+        cachedGeometrySchemaAvailable = nil
     }
 
     private func exec(_ sql: String) {

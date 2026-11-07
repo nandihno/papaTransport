@@ -23,6 +23,8 @@ struct BusMapExplorerView: View {
     @State private var lastQueriedCenter: CLLocationCoordinate2D?
     @State private var userCoordinate: CLLocationCoordinate2D?
     @State private var reloadTask: Task<Void, Never>?
+    @State private var boardReloadGeneration = 0
+    @State private var requestedCenter: CLLocationCoordinate2D?
     @State private var hasBootstrapped = false
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -32,6 +34,8 @@ struct BusMapExplorerView: View {
     /// Opened by tapping a vehicle pin. The board's own rows open the same
     /// sheet from inside `BusCard`, which keeps its own state.
     @State private var selectedTripRequest: BusTripRequest?
+    @State private var routeSelection = MapRouteSelection()
+    @State private var sheetPresentation = MapSheetPresentation()
 
     private static let autoRefreshInterval: Duration = .seconds(60)
 
@@ -77,7 +81,19 @@ struct BusMapExplorerView: View {
     }
 
     private var displayedNearbyStopIDs: [String] {
-        displayedNearbyStops.map(\.id)
+        mapStops.map(\.id)
+    }
+
+    private var mapStops: [NearbyBusStop] {
+        (displayedNearbyStops + favouriteBusInfo.favouriteStops).uniqueStops
+    }
+
+    private var peekDeparture: MapPeekDeparture? {
+        guard let next = mapStops.nextMapDeparture(selectedStopID: selectedStopID) else { return nil }
+        return MapPeekDeparture(departure: next.departure, stopName: next.stop.stopName) {
+            selectDeparture(next.departure, at: next.stop.id)
+            revealStopDepartures(next.stop.id, departure: next.departure)
+        }
     }
 
     private var displayedNearbyBusInfo: BusInfo {
@@ -127,7 +143,10 @@ struct BusMapExplorerView: View {
             isLoading: isLoading,
             onOpenSettings: onOpenSettings,
             onRecenter: recenterOnUser,
-            onRefresh: { await refreshAll() }
+            onRefresh: { await refreshAll() },
+            presentation: sheetPresentation,
+            departureListFocusID: selectedStopID.map { departureAnchor(for: $0, departure: routeSelection.selection?.departure) },
+            peekDeparture: peekDeparture
         ) {
             mapCard
         } headerContent: {
@@ -143,9 +162,27 @@ struct BusMapExplorerView: View {
         }
         .onDisappear {
             reloadTask?.cancel()
+            boardReloadGeneration &+= 1
+            requestedCenter = nil
+            isLoading = false
         }
         .onChange(of: displayedNearbyStopIDs) { _, _ in
             synchronizeSelectedStopWithDisplayedStops()
+        }
+        .onChange(of: selectedStopID) { _, stopId in
+            selectMapStop(stopId)
+        }
+        .onChange(of: nearbyBusInfo.id) { _, _ in
+            routeSelection.reconcile(with: mapStops)
+        }
+        .onChange(of: favouriteBusInfo.id) { _, _ in
+            routeSelection.reconcile(with: mapStops)
+        }
+        .onChange(of: normalizedRouteSearchText) { _, _ in
+            routeSelection.reconcile(with: mapStops)
+        }
+        .task(id: routeSelection.selection?.geometryID) {
+            await routeSelection.load(using: providerService)
         }
         .sheet(item: $selectedTripRequest) { request in
             BusTripDetailSheet(request: request)
@@ -155,8 +192,15 @@ struct BusMapExplorerView: View {
     }
 
     private var mapCard: some View {
-        Map(position: $cameraPosition, selection: $selectedStopID) {
+        let stops = mapStops
+        let matchingStopIDs = routeSelection.matchingStopIDs(in: stops)
+        return Map(position: $cameraPosition) {
             UserAnnotation()
+
+            ForEach(routeSelection.paths.indices, id: \.self) { index in
+                MapPolyline(coordinates: routeSelection.paths[index])
+                    .stroke(palette.info, lineWidth: 5)
+            }
 
             if let searchCenter {
                 MapCircle(center: searchCenter, radius: 300)
@@ -164,16 +208,26 @@ struct BusMapExplorerView: View {
                     .stroke(palette.accentStrong.opacity(0.28), lineWidth: 1.5)
             }
 
-            ForEach(displayedNearbyStops) { stop in
+            ForEach(stops) { stop in
                 Annotation(stop.stopName, coordinate: stop.coordinate, anchor: .bottom) {
-                    BusStopMapPin(
-                        stop: stop,
-                        isSelected: selectedStopID == stop.id,
-                        accentColor: palette.accent,
-                        symbolName: provider.symbolName
-                    )
+                    Button {
+                        selectedStopID = stop.id
+                        revealStopDepartures(stop.id)
+                    } label: {
+                        BusStopMapPin(
+                            stop: stop,
+                            isSelected: selectedStopID == stop.id,
+                            accentColor: palette.accent,
+                            symbolName: provider.symbolName
+                        )
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(stop.stopName)
+                    .accessibilityHint("Opens this stop's departures.")
+                    .opacity(routeSelection.selection == nil || matchingStopIDs.contains(stop.id) ? 1 : 0.4)
                 }
-                .tag(stop.id)
             }
 
             // Untagged so they stay out of the stop-selection binding.
@@ -183,6 +237,7 @@ struct BusMapExplorerView: View {
                         vehicle: annotation.vehicle,
                         onTap: annotation.isTappable ? { openTrip(annotation) } : nil
                     )
+                    .opacity(routeSelection.selection == nil || annotation.vehicle.tripId == routeSelection.selection?.departure.tripId ? 1 : 0.3)
                 }
                 .annotationTitles(.hidden)
             }
@@ -202,9 +257,13 @@ struct BusMapExplorerView: View {
     @ViewBuilder
     private var headerPill: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Pan the map to refresh stops around the center point.")
+            if routeSelection.selection != nil {
+                MapRouteSelectionControls(route: routeSelection, onShowDetails: showSelectedTrip)
+            } else {
+                Text("Tap a stop to see its departures. Pan to find other stops.")
                 .font(.transitCaption)
                 .foregroundStyle(palette.textSecondary)
+            }
 
             if let errorMessage, !errorMessage.isEmpty {
                 Text(errorMessage)
@@ -217,6 +276,9 @@ struct BusMapExplorerView: View {
 
     @ViewBuilder
     private var sheetSections: some View {
+        if routeSelection.selection != nil {
+            MapRouteSelectionControls(route: routeSelection, onShowDetails: showSelectedTrip)
+        }
         GTFSFeedWarningBanner(provider: provider)
 
         if let statusMessage, !statusMessage.isEmpty {
@@ -244,18 +306,25 @@ struct BusMapExplorerView: View {
             busInfo: displayedNearbyBusInfo,
             selectedStopID: $selectedStopID,
             selectedTrip: $selectedTripRequest,
+            mapSelection: routeSelection.selection,
+            onSelectMapDeparture: showDepartureDetails,
             showsNearby: true,
             showsFavourites: false,
-            emptyStateMessageOverride: nearbyEmptyStateMessage
+            emptyStateMessageOverride: nearbyEmptyStateMessage,
+            revealID: sheetPresentation.revealID
         )
 
         if !favouriteBusInfo.favouriteStops.isEmpty {
             BusCard(
                 title: "Favourite \(provider.stopsTitle)",
                 busInfo: favouriteBusInfo,
+                selectedStopID: $selectedStopID,
                 selectedTrip: $selectedTripRequest,
+                mapSelection: routeSelection.selection,
+                onSelectMapDeparture: showDepartureDetails,
                 showsNearby: false,
-                showsFavourites: true
+                showsFavourites: true,
+                revealID: sheetPresentation.revealID
             )
         }
     }
@@ -346,10 +415,55 @@ struct BusMapExplorerView: View {
 
     private func openTrip(_ annotation: VehicleAnnotation) {
         guard let stopId = annotation.stopId, let departure = annotation.departure else { return }
+        selectDeparture(departure, at: stopId)
+    }
+
+    private func revealStopDepartures(_ stopId: String, departure: BusDeparture? = nil) {
+        sheetPresentation.showDepartures(at: departureAnchor(for: stopId, departure: departure))
+    }
+
+    private func departureAnchor(for stopId: String, departure: BusDeparture?) -> String {
+        let isNearby = displayedNearbyStops.contains { stop in
+            guard stop.id == stopId else { return false }
+            guard let departure else { return true }
+            return stop.departures.contains {
+                $0.tripId == departure.tripId && $0.stopSequence == departure.stopSequence
+                    && $0.scheduledSeconds == departure.scheduledSeconds
+            }
+        }
+        return isNearby ? stopId : "favourite:\(stopId)"
+    }
+
+    private func selectDeparture(_ departure: BusDeparture, at stopId: String) {
+        guard let stop = mapStops.first(where: { $0.id == stopId }) else { return }
+        selectedStopID = stopId
+        routeSelection.select(MapDepartureSelection(provider: provider, stopId: stopId,
+                                                   stopName: stop.stopName, departure: departure))
+    }
+
+    private func showDepartureDetails(_ departure: BusDeparture, at stopId: String) {
+        selectDeparture(departure, at: stopId)
+        selectedTripRequest = BusTripRequest(provider: provider, stopId: stopId, departure: departure)
+    }
+
+    private func selectMapStop(_ stopId: String?) {
+        guard let stopId, let stop = mapStops.first(where: { $0.id == stopId }) else {
+            routeSelection.clear()
+            return
+        }
+        guard routeSelection.selection?.stopId != stopId else { return }
+        let departure = stop.departures.first { $0.tripId == routeSelection.selection?.departure.tripId }
+            ?? stop.departures.first
+        if let departure { selectDeparture(departure, at: stopId) }
+        else { routeSelection.clear() }
+    }
+
+    private func showSelectedTrip() {
+        guard let selection = routeSelection.selection else { return }
         selectedTripRequest = BusTripRequest(
             provider: provider,
-            stopId: stopId,
-            departure: departure
+            stopId: selection.stopId,
+            departure: selection.departure
         )
     }
 
@@ -417,14 +531,17 @@ struct BusMapExplorerView: View {
     }
 
     private func scheduleReload(around coordinate: CLLocationCoordinate2D) {
+        if let reference = requestedCenter ?? lastQueriedCenter,
+           coordinate.distance(to: reference) < 45 { return }
+
         reloadTask?.cancel()
+        boardReloadGeneration &+= 1
+        let generation = boardReloadGeneration
+        requestedCenter = coordinate
+        isLoading = true
         reloadTask = Task {
             try? await Task.sleep(for: .milliseconds(1500))
-            guard !Task.isCancelled else { return }
-
-            if let lastQueriedCenter, coordinate.distance(to: lastQueriedCenter) < 45 {
-                return
-            }
+            guard !Task.isCancelled, generation == boardReloadGeneration else { return }
 
             await reloadBoard(around: coordinate)
         }
@@ -442,8 +559,18 @@ struct BusMapExplorerView: View {
 
     @MainActor
     private func reloadBoard(around coordinate: CLLocationCoordinate2D) async {
+        guard !Task.isCancelled else { return }
+        boardReloadGeneration &+= 1
+        let generation = boardReloadGeneration
+        requestedCenter = coordinate
         isLoading = true
         errorMessage = nil
+        defer {
+            if generation == boardReloadGeneration {
+                isLoading = false
+                requestedCenter = nil
+            }
+        }
         let shouldAutoSelectFirstStop = lastQueriedCenter == nil
 
         do {
@@ -451,15 +578,18 @@ struct BusMapExplorerView: View {
                 latitude: coordinate.latitude,
                 longitude: coordinate.longitude
             )
+            guard !Task.isCancelled, generation == boardReloadGeneration else { return }
 
             nearbyBusInfo = updatedBusInfo
             lastQueriedCenter = coordinate
 
             if let userCoordinate {
-                favouriteBusInfo = try await fetchFavouriteBoard(
+                let updatedFavouriteInfo = try await fetchFavouriteBoard(
                     referenceLatitude: userCoordinate.latitude,
                     longitude: userCoordinate.longitude
                 )
+                guard !Task.isCancelled, generation == boardReloadGeneration else { return }
+                favouriteBusInfo = updatedFavouriteInfo
             } else {
                 favouriteBusInfo = BusInfo(
                     provider: provider,
@@ -485,6 +615,7 @@ struct BusMapExplorerView: View {
                 selectedStopID = nil
             }
         } catch {
+            guard !Task.isCancelled, generation == boardReloadGeneration else { return }
             if error is LocationError {
                 let unavailable = BusInfo.noLocation(provider: provider)
                 nearbyBusInfo = unavailable
@@ -492,8 +623,6 @@ struct BusMapExplorerView: View {
             }
             errorMessage = error.localizedDescription
         }
-
-        isLoading = false
     }
 
     private var providerService: any BusDataProviding {
@@ -578,7 +707,7 @@ struct BusMapExplorerView: View {
             return
         }
 
-        selectedStopID = displayedNearbyStops.first?.id
+        selectedStopID = mapStops.first?.id
     }
 }
 

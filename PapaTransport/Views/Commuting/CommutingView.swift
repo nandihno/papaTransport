@@ -117,7 +117,7 @@ struct CommutingView: View {
         case .loading:
             return "Looking for current departures near your map position."
         case .loaded:
-            return "Updates automatically every minute while this tab is open. Pull down or move the map to check a different area."
+            return "Updates every minute. Pull down to refresh or move the map."
         }
     }
 
@@ -139,7 +139,7 @@ struct CommutingView: View {
         case .loading:
             return "Updating line status, planned works, and nearby station departures."
         case .loaded:
-            return "Updates automatically every minute while this tab is open. Pull down or move the map to check a different area."
+            return "Updates every minute. Pull down to refresh or move the map."
         }
     }
 

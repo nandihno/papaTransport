@@ -40,6 +40,11 @@ nonisolated final class QLDTrainMapService: BusDataProviding {
         )
     }
 
+    func fetchRouteGeometry(for departure: BusDeparture) async throws -> [[CLLocationCoordinate2D]] {
+        try await GTFSDatabase.shared.ensureReady()
+        return try await GTFSDatabase.shared.routeGeometry(tripId: departure.tripId)
+    }
+
     func fetchBusInfo(
         minLat: Double,
         maxLat: Double,
