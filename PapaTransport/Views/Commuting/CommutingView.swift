@@ -79,26 +79,6 @@ struct CommutingView: View {
         transportRegion == .queensland ? .queenslandTransLink : .victorianPTV
     }
 
-    private var usesImmersiveMapLayout: Bool {
-        if selectedTab == 0 {
-            return shouldShowBusCard
-        }
-        return true
-    }
-
-    private var navigationTitle: String {
-        switch selectedTab {
-        case 0:
-            return "Bus"
-        case 1:
-            return "Trains"
-        case 3:
-            return "Trams"
-        default:
-            return "Plan"
-        }
-    }
-
     private var busStatusMessage: String? {
         switch loadState {
         case .idle:
@@ -152,71 +132,40 @@ struct CommutingView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            TabView(selection: $selectedTab) {
-                mapTab
-                    .tag(0)
-                    .tabItem {
-                        Label("Bus", systemImage: "bus.fill")
-                    }
-
-                trainsTab
-                    .tag(1)
-                    .tabItem {
-                        Label("Trains", systemImage: "tram.fill")
-                    }
-
-                // Trams are Victoria-only. The tag stays 3 so Plan keeps tag 2
-                // and selection is not silently reinterpreted between regions.
-                if transportRegion == .victorian {
-                    tramsTab
-                        .tag(3)
-                        .tabItem {
-                            Label("Trams", systemImage: "cablecar.fill")
-                        }
-                }
-
-                routePlannerTab
-                    .tag(2)
-                    .tabItem {
-                        Label("Plan", systemImage: "map.fill")
-                    }
+        TabView(selection: $selectedTab) {
+            Tab("Bus", systemImage: "bus.fill", value: 0) {
+                tabScreen("Bus") { mapTab }
             }
-            // Reclaims vertical space while reading a departure list. The map
-            // tabs are the whole screen, so the tab bar is the only chrome
-            // competing with content.
-            .tabBarMinimizeBehavior(.onScrollDown)
-            .onChange(of: selectedTab) { _, _ in
+
+            Tab("Trains", systemImage: "tram.fill", value: 1) {
+                tabScreen("Trains") { trainsTab }
+            }
+
+            if transportRegion == .victorian {
+                Tab("Trams", systemImage: "cablecar.fill", value: 3) {
+                    tabScreen("Trams") { tramsTab }
+                }
+            }
+
+            Tab("Plan", systemImage: "map.fill", value: 2) {
+                tabScreen("Plan a trip") { RoutePlannerView() }
+            }
+        }
+        .onChange(of: selectedTab) { _, _ in
+            fetchData()
+        }
+        .onChange(of: transportRegion) { _, newRegion in
+            if newRegion != .victorian && selectedTab == 3 {
+                selectedTab = 0
+            }
+        }
+        .onChange(of: showSettings) { _, isPresented in
+            if !isPresented {
                 fetchData()
             }
-            .onChange(of: transportRegion) { _, newRegion in
-                // The Trams tab disappears outside Victoria; leaving it selected
-                // would show an empty TabView.
-                if newRegion != .victorian && selectedTab == 3 {
-                    selectedTab = 0
-                }
-            }
-            .onChange(of: showSettings) { _, isPresented in
-                if !isPresented {
-                    fetchData()
-                }
-            }
-            .toolbar(usesImmersiveMapLayout ? .hidden : .visible, for: .navigationBar)
-            .navigationTitle(navigationTitle)
-            .navigationBarTitleDisplayMode(selectedTab == 0 ? .large : .inline)
-            .toolbar {
-                if !usesImmersiveMapLayout {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { showSettings = true } label: {
-                            Image(systemName: "gearshape.fill")
-                                .foregroundStyle(palette.accentText)
-                        }
-                    }
-                }
-            }
-            .sheet(isPresented: $showSettings) {
-                CommutingSettingsView(trainLineName: $trainLineName)
-            }
+        }
+        .sheet(isPresented: $showSettings) {
+            CommutingSettingsView(trainLineName: $trainLineName)
         }
         .screenTheme(AppTheme.transport)
         // Picks up the remaining built-in text styles (.caption, .subheadline …)
@@ -224,6 +173,22 @@ struct CommutingView: View {
         .fontDesign(.rounded)
         .task { await performFetch() }
         .task(id: transportRegion) { await refreshQueenslandTimetableIfNeeded() }
+    }
+
+    private func tabScreen<Content: View>(
+        _ title: LocalizedStringKey,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        NavigationStack {
+            content()
+                .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Settings", systemImage: "gearshape") { showSettings = true }
+                    }
+                }
+        }
     }
 
     // MARK: - Map Tab
@@ -240,7 +205,6 @@ struct CommutingView: View {
                 BusMapExplorerView(
                     provider: busProvider,
                     initialBusInfo: loadState.snapshot?.busInfo,
-                    onOpenSettings: { showSettings = true },
                     onRefresh: { await performFetch() },
                     autoRefreshEnabled: selectedTab == 0,
                     statusMessage: busStatusMessage,
@@ -252,17 +216,44 @@ struct CommutingView: View {
                 .opacity(loadState.isIdle ? 0.58 : 1)
                 .animation(.spring(duration: 0.45), value: loadState.isLoaded)
             } else {
-                ScrollView {
-                    VStack(spacing: 24) {
-                        statusBanner
-                        gtfsProgressBanner
-                        CommuteConfigurationCard()
-                    }
-                    .padding()
-                }
-                .refreshable { await performFetch() }
+                busConfiguration
             }
         }
+    }
+
+    private var busConfiguration: some View {
+        GeometryReader { proxy in
+            let bounds = busConfigurationBounds(in: proxy)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    CommuteConfigurationCard(onOpenSettings: { showSettings = true })
+                    statusBanner
+                    gtfsProgressBanner
+                }
+                .padding(16)
+                .frame(maxWidth: 440, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .refreshable { await performFetch() }
+            .frame(width: bounds.width, height: bounds.height)
+            .padding(.top, bounds.minY)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(palette.screenBackground.ignoresSafeArea())
+    }
+
+    private func busConfigurationBounds(in proxy: GeometryProxy) -> CGRect {
+        let bounds = CGRect(origin: .zero, size: proxy.size)
+        guard #available(iOS 27.1, *),
+              let fold = proxy.reservedRegions(kind: .division).first else { return bounds }
+
+        if fold.frame.height > fold.frame.width {
+            let width = max(0, min(bounds.width, fold.frame.minX - fold.margins.leading))
+            return CGRect(x: 0, y: 0, width: width, height: bounds.height)
+        }
+
+        let top = max(0, min(bounds.height, fold.frame.maxY + fold.margins.bottom))
+        return CGRect(x: 0, y: top, width: bounds.width, height: bounds.height - top)
     }
 
     // MARK: - Trains Tab
@@ -279,7 +270,6 @@ struct CommutingView: View {
                 TrainMapExplorerView(
                     provider: .victorianTrainPTV,
                     trainInfo: loadState.snapshot?.trainInfo ?? placeholderTrainInfo,
-                    onOpenSettings: { showSettings = true },
                     onRefresh: { await performFetch() },
                     autoRefreshEnabled: selectedTab == 1,
                     statusMessage: trainStatusMessage,
@@ -288,7 +278,6 @@ struct CommutingView: View {
             } else {
                 TrainMapExplorerView(
                     provider: .queenslandTrainTransLink,
-                    onOpenSettings: { showSettings = true },
                     onRefresh: { await performFetch() },
                     autoRefreshEnabled: selectedTab == 1,
                     statusMessage: trainStatusMessage,
@@ -303,18 +292,11 @@ struct CommutingView: View {
     private var tramsTab: some View {
         BusMapExplorerView(
             provider: .victorianTramPTV,
-            onOpenSettings: { showSettings = true },
             onRefresh: { await performFetch() },
             autoRefreshEnabled: selectedTab == 3,
             statusMessage: nil,
             statusDetail: nil
         )
-    }
-
-    // MARK: - Route Planner Tab
-
-    private var routePlannerTab: some View {
-        RoutePlannerView()
     }
 
     @ViewBuilder
@@ -421,23 +403,27 @@ struct CommutingView: View {
 }
 
 private struct CommuteConfigurationCard: View {
+    let onOpenSettings: () -> Void
+
     @Environment(\.themePalette) private var palette
 
     var body: some View {
         CardContainer {
-            VStack(alignment: .leading, spacing: 10) {
-                Label("Commuting", systemImage: "car.2.fill")
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Bus departures are off", systemImage: "bus.fill")
                     .font(.transitHeadline)
                     .foregroundStyle(palette.accentText)
+                    .accessibilityAddTraits(.isHeader)
 
-                Text("No commute cards are enabled for the current region.")
-                    .font(.transitCaption)
-                    .foregroundStyle(palette.textPrimary)
-
-                Text("Open Settings to choose which transport cards should appear.")
-                    .font(.transitCaption)
+                Text("Turn on the bus card in Settings to explore stops and see upcoming departures.")
+                    .font(.transitBody)
                     .foregroundStyle(palette.textSecondary)
+
+                Button("Open Settings", systemImage: "gearshape", action: onOpenSettings)
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

@@ -832,6 +832,31 @@ Direction groups order departures by their effective countdown so the next
 service remains correct across midnight and when live predictions change order.
 Physical-device testing in both open and closed positions is still required.
 
+### iPhone Duo adaptive layouts (2026-11-10)
+
+The commuting shell now uses native SwiftUI tabs and keeps Settings in the
+navigation toolbar across the bus, train, tram and trip-planning screens. The
+map explorers use the iOS 27.1+ `ArrangementView` overlay layout so the
+departures board and map adapt around the Duo hinge. The collapsed board stays
+available as a preview, while opening the device gives the board a bounded
+reading column beside the map. On earlier OS versions, the explorers retain a
+compact draggable board. Map recentering is in the native toolbar, and the bus
+setup screen and trip planner use reserved regions when the hinge divides the
+display. The planner switches between a map-and-controls split and a stacked
+compact layout while retaining its selected points through a fold.
+
+The Duo simulator checks also exposed a MapKit update loop on the tram map.
+Camera callbacks now ignore negligible changes, and the nearby search circle is
+anchored to the center used for the last board request.
+
+Validation: the iPhone Duo iOS 27.2 simulator build launched successfully, and
+the open, partially folded and closed layouts were inspected. The planner's
+selected endpoint and tram route filter remained selected across a fold. Route
+geometry and map selection regression scripts, shell syntax checks, Docker
+validation, and whitespace checks passed. Physical-device, Split View, and
+VoiceOver acceptance remain pending. Live departure data was not verified in
+the simulator.
+
 ## 3. Sequencing
 
 | Phase | Effort | Risk | User-visible result |

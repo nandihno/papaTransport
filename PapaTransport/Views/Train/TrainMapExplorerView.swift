@@ -5,7 +5,6 @@ import SwiftUI
 struct TrainMapExplorerView: View {
     let initialBusInfo: BusInfo?
     let trainInfo: TrainInfo
-    let onOpenSettings: () -> Void
     let onRefresh: () async -> Void
     let autoRefreshEnabled: Bool
     let statusMessage: String?
@@ -40,7 +39,6 @@ struct TrainMapExplorerView: View {
         provider: BusProvider = .victorianTrainPTV,
         initialBusInfo: BusInfo? = nil,
         trainInfo: TrainInfo = .placeholder(lineName: ""),
-        onOpenSettings: @escaping () -> Void = {},
         onRefresh: @escaping () async -> Void = {},
         autoRefreshEnabled: Bool = true,
         statusMessage: String? = nil,
@@ -49,7 +47,6 @@ struct TrainMapExplorerView: View {
         self.provider = provider
         self.initialBusInfo = initialBusInfo
         self.trainInfo = trainInfo
-        self.onOpenSettings = onOpenSettings
         self.onRefresh = onRefresh
         self.autoRefreshEnabled = autoRefreshEnabled
         self.statusMessage = statusMessage
@@ -128,7 +125,6 @@ struct TrainMapExplorerView: View {
             title: "Train Stations in View",
             summary: mapSummary,
             isLoading: isLoading,
-            onOpenSettings: onOpenSettings,
             onRecenter: recenterOnUser,
             onRefresh: { await refreshAll() },
             presentation: sheetPresentation,

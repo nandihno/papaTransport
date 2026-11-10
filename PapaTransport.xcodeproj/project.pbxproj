@@ -6,7 +6,53 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A10000000000000000000020 /* PapaTransportWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* PapaTransportWidgets.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A10000000000000000000021 /* TrainLineStatusWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* TrainLineStatusWidget.swift */; };
+		A10000000000000000000022 /* TrainLineStatusIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* TrainLineStatusIntent.swift */; };
+		A10000000000000000000023 /* TrainLineStatusEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* TrainLineStatusEntry.swift */; };
+		A10000000000000000000024 /* TrainLineStatusProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* TrainLineStatusProvider.swift */; };
+		A10000000000000000000025 /* TrainLineStatusWidgetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000006 /* TrainLineStatusWidgetView.swift */; };
+		A10000000000000000000026 /* ../PapaTransport/Models/TrainModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000007 /* ../PapaTransport/Models/TrainModels.swift */; };
+		A10000000000000000000027 /* ../PapaTransport/Models/TrainStatusModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* ../PapaTransport/Models/TrainStatusModels.swift */; };
+		A10000000000000000000028 /* ../PapaTransport/Services/TrainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000009 /* ../PapaTransport/Services/TrainService.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A10000000000000000000035 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BA2D07D82F8DB47A00C80BAE /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A10000000000000000000030;
+			remoteInfo = PapaTransportWidgets;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A10000000000000000000034 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A10000000000000000000020 /* PapaTransportWidgets.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		A10000000000000000000001 /* PapaTransportWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PapaTransportWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000002 /* TrainLineStatusWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainLineStatusWidget.swift; sourceTree = "<group>"; };
+		A10000000000000000000003 /* TrainLineStatusIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainLineStatusIntent.swift; sourceTree = "<group>"; };
+		A10000000000000000000004 /* TrainLineStatusEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainLineStatusEntry.swift; sourceTree = "<group>"; };
+		A10000000000000000000005 /* TrainLineStatusProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainLineStatusProvider.swift; sourceTree = "<group>"; };
+		A10000000000000000000006 /* TrainLineStatusWidgetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainLineStatusWidgetView.swift; sourceTree = "<group>"; };
+		A10000000000000000000007 /* ../PapaTransport/Models/TrainModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../PapaTransport/Models/TrainModels.swift; sourceTree = "<group>"; };
+		A10000000000000000000008 /* ../PapaTransport/Models/TrainStatusModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../PapaTransport/Models/TrainStatusModels.swift; sourceTree = "<group>"; };
+		A10000000000000000000009 /* ../PapaTransport/Services/TrainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../PapaTransport/Services/TrainService.swift; sourceTree = "<group>"; };
+		A1000000000000000000000A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		BA2D07E02F8DB47A00C80BAE /* PapaTransport.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PapaTransport.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -19,6 +65,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		A10000000000000000000032 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		BA2D07DD2F8DB47A00C80BAE /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -29,10 +82,27 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		A10000000000000000000010 /* PapaTransportWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000002 /* TrainLineStatusWidget.swift */,
+				A10000000000000000000003 /* TrainLineStatusIntent.swift */,
+				A10000000000000000000004 /* TrainLineStatusEntry.swift */,
+				A10000000000000000000005 /* TrainLineStatusProvider.swift */,
+				A10000000000000000000006 /* TrainLineStatusWidgetView.swift */,
+				A10000000000000000000007 /* ../PapaTransport/Models/TrainModels.swift */,
+				A10000000000000000000008 /* ../PapaTransport/Models/TrainStatusModels.swift */,
+				A10000000000000000000009 /* ../PapaTransport/Services/TrainService.swift */,
+				A1000000000000000000000A /* Info.plist */,
+			);
+			path = PapaTransportWidgets;
+			sourceTree = "<group>";
+		};
 		BA2D07D72F8DB47A00C80BAE = {
 			isa = PBXGroup;
 			children = (
 				BA2D07E22F8DB47A00C80BAE /* PapaTransport */,
+				A10000000000000000000010 /* PapaTransportWidgets */,
 				BA2D07E12F8DB47A00C80BAE /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +111,7 @@
 			isa = PBXGroup;
 			children = (
 				BA2D07E02F8DB47A00C80BAE /* PapaTransport.app */,
+				A10000000000000000000001 /* PapaTransportWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,6 +119,25 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		A10000000000000000000030 /* PapaTransportWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000000039 /* Build configuration list for PBXNativeTarget "PapaTransportWidgets" */;
+			buildPhases = (
+				A10000000000000000000031 /* Sources */,
+				A10000000000000000000032 /* Frameworks */,
+				A10000000000000000000033 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PapaTransportWidgets;
+			packageProductDependencies = (
+			);
+			productName = PapaTransportWidgets;
+			productReference = A10000000000000000000001 /* PapaTransportWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		BA2D07DF2F8DB47A00C80BAE /* PapaTransport */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = BA2D07EB2F8DB47C00C80BAE /* Build configuration list for PBXNativeTarget "PapaTransport" */;
@@ -55,10 +145,12 @@
 				BA2D07DC2F8DB47A00C80BAE /* Sources */,
 				BA2D07DD2F8DB47A00C80BAE /* Frameworks */,
 				BA2D07DE2F8DB47A00C80BAE /* Resources */,
+				A10000000000000000000034 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A10000000000000000000036 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				BA2D07E22F8DB47A00C80BAE /* PapaTransport */,
@@ -80,6 +172,9 @@
 				LastSwiftUpdateCheck = 2640;
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
+					A10000000000000000000030 = {
+						CreatedOnToolsVersion = 27.2;
+					};
 					BA2D07DF2F8DB47A00C80BAE = {
 						CreatedOnToolsVersion = 26.4;
 					};
@@ -100,11 +195,19 @@
 			projectRoot = "";
 			targets = (
 				BA2D07DF2F8DB47A00C80BAE /* PapaTransport */,
+				A10000000000000000000030 /* PapaTransportWidgets */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		A10000000000000000000033 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		BA2D07DE2F8DB47A00C80BAE /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -115,6 +218,21 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		A10000000000000000000031 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000021 /* TrainLineStatusWidget.swift in Sources */,
+				A10000000000000000000022 /* TrainLineStatusIntent.swift in Sources */,
+				A10000000000000000000023 /* TrainLineStatusEntry.swift in Sources */,
+				A10000000000000000000024 /* TrainLineStatusProvider.swift in Sources */,
+				A10000000000000000000025 /* TrainLineStatusWidgetView.swift in Sources */,
+				A10000000000000000000026 /* ../PapaTransport/Models/TrainModels.swift in Sources */,
+				A10000000000000000000027 /* ../PapaTransport/Models/TrainStatusModels.swift in Sources */,
+				A10000000000000000000028 /* ../PapaTransport/Services/TrainService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		BA2D07DC2F8DB47A00C80BAE /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -124,7 +242,71 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		A10000000000000000000036 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000000000000000000030 /* PapaTransportWidgets */;
+			targetProxy = A10000000000000000000035 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		A10000000000000000000037 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 25;
+				DEVELOPMENT_TEAM = D58U53H2X6;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PapaTransportWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 3.33;
+				PRODUCT_BUNDLE_IDENTIFIER = org.nando.papatransport.PapaTransport.WidgetExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A10000000000000000000038 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 25;
+				DEVELOPMENT_TEAM = D58U53H2X6;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PapaTransportWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 3.33;
+				PRODUCT_BUNDLE_IDENTIFIER = org.nando.papatransport.PapaTransport.WidgetExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		BA2D07E92F8DB47C00C80BAE /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -252,7 +434,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				DEVELOPMENT_TEAM = D58U53H2X6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -261,7 +443,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.31;
+				MARKETING_VERSION = 3.34;
 				PRODUCT_BUNDLE_IDENTIFIER = org.nando.papatransport.PapaTransport;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -280,7 +462,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				DEVELOPMENT_TEAM = D58U53H2X6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -289,7 +471,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.31;
+				MARKETING_VERSION = 3.34;
 				PRODUCT_BUNDLE_IDENTIFIER = org.nando.papatransport.PapaTransport;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -305,6 +487,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		A10000000000000000000039 /* Build configuration list for PBXNativeTarget "PapaTransportWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000037 /* Debug */,
+				A10000000000000000000038 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		BA2D07DB2F8DB47A00C80BAE /* Build configuration list for PBXProject "PapaTransport" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

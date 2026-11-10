@@ -14,6 +14,8 @@ private enum RoutePlanPointMode: String, CaseIterable {
 /// Apple Maps app. Unlike the previous GTFS-backed planner it needs no local
 /// database and works in every region.
 struct RoutePlannerView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.themePalette) private var palette
 
     @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
@@ -37,20 +39,38 @@ struct RoutePlannerView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack(alignment: .top) {
-                mapView
-                    .ignoresSafeArea()
-
-                headerOverlay(topInset: proxy.safeAreaInsets.top)
-
-                VStack {
-                    Spacer()
-                    resultSheet(safeBottom: proxy.safeAreaInsets.bottom)
+            if #available(iOS 27.1, *),
+               horizontalSizeClass == .regular || !proxy.reservedRegions(kind: .division).isEmpty {
+                ArrangementView {
+                    mapView
+                } secondary: {
+                    plannerPanel
+                        .splitArrangementLayoutRatio(idealHorizontal: 0.44, idealVertical: 0.42)
                 }
+                .arrangementViewStyle(.split)
+            } else {
+                compactLayout(in: proxy.size)
             }
         }
         .onDisappear {
             planTask?.cancel()
+        }
+    }
+
+    private func compactLayout(in size: CGSize) -> some View {
+        let sideBySide = size.width >= 520 && size.width > size.height
+        let layout = sideBySide
+            ? AnyLayout(HStackLayout(spacing: 0))
+            : AnyLayout(VStackLayout(spacing: 0))
+
+        return layout {
+            mapView
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            plannerPanel
+                .frame(
+                    width: sideBySide ? min(size.width * 0.44, 420) : nil,
+                    height: sideBySide ? nil : size.height * 0.43
+                )
         }
     }
 
@@ -90,108 +110,93 @@ struct RoutePlannerView: View {
         }
     }
 
-    // MARK: - Header
+    // MARK: - Planner panel
 
-    private func headerOverlay(topInset: CGFloat) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 10) {
+    private var plannerPanel: some View {
+        let headerLayout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 8))
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                headerLayout {
+                    Label("Trip endpoints", systemImage: "map.fill")
+                        .font(.transitHeadline)
+                        .foregroundStyle(palette.accentText)
+                        .accessibilityAddTraits(.isHeader)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    HStack(spacing: 8) {
+                        Button("Use current location", systemImage: "location.fill") {
+                            useCurrentLocationAsOrigin()
+                        }
+                        .labelStyle(.iconOnly)
+
+                        Button("Clear trip", systemImage: "arrow.counterclockwise") {
+                            resetPlan()
+                        }
+                        .labelStyle(.iconOnly)
+                        .disabled(originCoordinate == nil && destinationCoordinate == nil && errorMessage == nil)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                }
+
                 Picker("Point", selection: $selectedPointMode) {
                     ForEach(RoutePlanPointMode.allCases, id: \.self) { mode in
                         Text(mode.rawValue).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 190)
 
                 Text(instructionText)
                     .font(.transitCaption)
                     .foregroundStyle(palette.textSecondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.ultraThinMaterial, in: Capsule())
-            }
 
-            Spacer()
-
-            VStack(spacing: 10) {
-                overlayControlButton(systemName: "location.fill") {
-                    useCurrentLocationAsOrigin()
-                }
-                overlayControlButton(systemName: "arrow.counterclockwise") {
-                    resetPlan()
-                }
+                statusContent
+                resultsContent
             }
+            .padding(16)
+            .frame(maxWidth: 500, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, topInset + 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(palette.screenBackground)
     }
 
     private var instructionText: String {
-        if originCoordinate == nil { return "Tap the map to set your starting point" }
-        if destinationCoordinate == nil { return "Now tap your destination" }
-        return "Tap the map to move the \(selectedPointMode.rawValue.lowercased()) point"
-    }
-
-    private func overlayControlButton(systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 18, weight: .bold))
-                .foregroundStyle(.primary)
-                .frame(width: 54, height: 54)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(Color.primary.opacity(0.10), lineWidth: 1)
-                }
+        switch selectedPointMode {
+        case .origin:
+            originCoordinate == nil ? "Tap the map to choose a starting point." : "Tap the map to move the starting point."
+        case .destination:
+            destinationCoordinate == nil ? "Tap the map to choose a destination." : "Tap the map to move the destination."
         }
-        .buttonStyle(.plain)
     }
 
-    // MARK: - Result sheet
+    @ViewBuilder
+    private var resultsContent: some View {
+        if let result, !result.legs.isEmpty {
+            CardContainer {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Travel estimates")
+                        .font(.transitBody)
+                        .accessibilityAddTraits(.isHeader)
 
-    private func resultSheet(safeBottom: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Plan Trip", systemImage: "map.fill")
-                .font(.transitHeadline)
-                .foregroundStyle(palette.accentText)
-
-            statusContent
-
-            if let result, !result.legs.isEmpty {
-                ForEach(result.legs) { leg in
-                    modeRow(leg)
-                }
-
-                Button {
-                    openInMaps()
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "arrow.up.forward.app.fill")
-                        Text("Open in Apple Maps")
-                            .font(.transitBody)
-                        Spacer()
+                    ForEach(result.legs) { leg in
+                        modeRow(leg)
                     }
-                    .padding(.vertical, 12)
-                    .padding(.horizontal, 14)
-                    .background(palette.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .foregroundStyle(palette.accentText)
                 }
-                .buttonStyle(.plain)
-
-                Text("Apple Maps has the step-by-step route, including which services to catch.")
-                    .font(.transitCaption)
-                    .foregroundStyle(palette.textTertiary)
             }
+
+            Button("Open in Apple Maps", systemImage: "arrow.up.forward.app") {
+                openInMaps()
+            }
+            .buttonStyle(TransitPrimaryButtonStyle())
+
+            Text("Apple Maps has the step-by-step route, including which services to catch.")
+                .font(.transitCaption)
+                .foregroundStyle(palette.textSecondary)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(palette.surfaceRaised.opacity(0.94), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(palette.textTertiary.opacity(0.14), lineWidth: 1)
-        }
-        .padding(.horizontal, 12)
-        .padding(.bottom, safeBottom + 8)
     }
 
     @ViewBuilder
@@ -207,10 +212,6 @@ struct RoutePlannerView: View {
             Text(errorMessage)
                 .font(.transitCaption)
                 .foregroundStyle(palette.warning)
-        } else if originCoordinate == nil || destinationCoordinate == nil {
-            Text("Choose a start and destination to see how long the trip takes.")
-                .font(.transitCaption)
-                .foregroundStyle(palette.textSecondary)
         } else if result?.legs.isEmpty ?? false {
             Text("No estimate available for these points.")
                 .font(.transitCaption)
@@ -219,39 +220,49 @@ struct RoutePlannerView: View {
     }
 
     private func modeRow(_ leg: PlanLiteLeg) -> some View {
-        Button {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+            : AnyLayout(HStackLayout(spacing: 12))
+
+        return Button {
             selectedMode = leg.mode
             frameRoute(leg)
         } label: {
-            HStack(spacing: 12) {
-                Image(systemName: leg.mode.symbolName)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(leg.mode == selectedMode ? palette.accentText : palette.textSecondary)
-                    .frame(width: 26)
+            layout {
+                HStack(spacing: 12) {
+                    Image(systemName: leg.mode.symbolName)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(leg.mode == selectedMode ? palette.accentText : palette.textSecondary)
+                        .frame(width: 26)
+                        .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(leg.mode.title)
-                        .font(.transitBody)
-                        .foregroundStyle(palette.textPrimary)
-                    Text(distanceText(leg.distanceMeters))
-                        .font(.transitCaption)
-                        .foregroundStyle(palette.textTertiary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(leg.mode.title)
+                            .font(.transitBody)
+                            .foregroundStyle(palette.textPrimary)
+                        Text(distanceText(leg.distanceMeters))
+                            .font(.transitCaption)
+                            .foregroundStyle(palette.textSecondary)
+                    }
                 }
-
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Text(durationText(leg.travelTime))
                     .font(.transitBody)
+                    .monospacedDigit()
                     .foregroundStyle(leg.mode == selectedMode ? palette.accentText : palette.textPrimary)
             }
+            .frame(minHeight: 44)
             .padding(.vertical, 10)
             .padding(.horizontal, 12)
             .background(
                 (leg.mode == selectedMode ? palette.accent.opacity(0.10) : Color.clear),
                 in: RoundedRectangle(cornerRadius: 14, style: .continuous)
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(leg.mode == selectedMode ? .isSelected : [])
     }
 
     // MARK: - Actions
@@ -263,6 +274,7 @@ struct RoutePlannerView: View {
             if destinationCoordinate == nil { selectedPointMode = .destination }
         case .destination:
             destinationCoordinate = coordinate
+            if originCoordinate == nil { selectedPointMode = .origin }
         }
         planIfReady()
     }

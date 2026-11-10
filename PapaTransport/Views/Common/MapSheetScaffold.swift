@@ -1,22 +1,10 @@
-import MapKit
 import SwiftUI
 
-/// The map-plus-draggable-sheet layout shared by the train, bus and tram
-/// explorers.
-///
-/// Both explorers previously carried their own byte-identical copies of the
-/// detent maths, drag gesture, sheet chrome, grip handle and floating control
-/// buttons — about 400 lines duplicated. This owns all of it; callers supply
-/// the map, the header pill's contents, and the sheet's contents.
-///
-/// The sheet is a custom container rather than a real `.sheet` with
-/// `presentationDetents`, which would delete the drag maths entirely: a
-/// presented sheet covers the tab bar, and all four tabs have to stay reachable.
+/// The nonmodal map and departures board shared by the bus, train and tram tabs.
 struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: View>: View {
     let title: String
     let summary: String
     let isLoading: Bool
-    let onOpenSettings: () -> Void
     let onRecenter: () -> Void
     let onRefresh: () async -> Void
     let presentation: MapSheetPresentation
@@ -37,78 +25,69 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack(alignment: .top) {
-                mapContent
-                    .ignoresSafeArea()
-
-                headerOverlay(topInset: proxy.safeAreaInsets.top)
-
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    bottomSheet(proxy: proxy)
-                        .frame(maxWidth: proxy.size.width >= 700 ? 480 : .infinity, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            if #available(iOS 27.1, *) {
+                ArrangementView {
+                    DepartureArrangementPanel { isTiled in
+                        departurePanel(proxy: proxy, isTiled: isTiled)
+                    }
+                    .overlayArrangementEdge(HorizontalEdge.leading)
+                    .overlayArrangementEdge(VerticalEdge.bottom)
+                } secondary: {
+                    mapPane
+                }
+                .arrangementViewStyle(.overlay)
+            } else {
+                ZStack(alignment: .bottomLeading) {
+                    mapPane
+                    departurePanel(proxy: proxy, isTiled: false)
                 }
             }
         }
         .background(palette.backgroundBase)
-    }
-
-    // MARK: - Header
-
-    /// No `#available` gate anywhere in this file: the target's minimum
-    /// deployment is iOS 26.4, so Liquid Glass is always present.
-    private func headerOverlay(topInset: CGFloat) -> some View {
-        // No GlassEffectContainer: the buttons carry their own glass via
-        // `.buttonStyle(.glass)`, leaving the pill as the only `.glassEffect()`
-        // surface here — and a container around one surface earns nothing while
-        // adding a layer between the buttons and their touches.
-        HStack(alignment: .top) {
-            // Glass carries its own legibility over the map, so the two
-            // full-screen scrim gradients the explorers used to draw are gone.
-            headerContent
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .glassEffect(.regular, in: .rect(cornerRadius: 18))
-
-            Spacer()
-
-            VStack(spacing: 12) {
-                controlButton(systemName: "gearshape.fill", action: onOpenSettings)
-                controlButton(systemName: "location.fill", action: onRecenter)
+        .toolbar {
+            if #available(iOS 27, *) {
+                recenterToolbarItem.visibilityPriority(.high)
+            } else {
+                recenterToolbarItem
             }
         }
-        .padding(.top, max(topInset, 12))
-        .padding(.horizontal, 18)
     }
 
-    /// Uses `.buttonStyle(.glass)` rather than a plain button wrapped in
-    /// `.glassEffect(.interactive())`.
-    ///
-    /// The latter puts an interactive glass layer *outside* the button, and
-    /// that layer runs its own press handling — which competed with the
-    /// button's and left the control ignoring taps after the first one.
-    /// `.glass` is the supported way to make a button out of glass.
-    private func controlButton(systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 18, weight: .bold))
-                .frame(width: 52, height: 52)
-                .contentShape(.circle)
+    private var recenterToolbarItem: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button("Recenter map", systemImage: "location.fill", action: onRecenter)
         }
-        .buttonStyle(.glass)
-        .clipShape(.circle)
+    }
+
+    private var mapPane: some View {
+        mapContent
+            .ignoresSafeArea(.container)
+            .overlay(alignment: .topLeading) {
+                headerContent
+                    .frame(maxWidth: 360, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                    .padding(12)
+            }
     }
 
     // MARK: - Sheet
 
-    private func bottomSheet(proxy: GeometryProxy) -> some View {
-        let safeBottom = max(proxy.safeAreaInsets.bottom, 12)
+    private func departurePanel(proxy: GeometryProxy, isTiled: Bool) -> some View {
+        let showsPeek = !isTiled && detent == .collapsed
+        let isWide = proxy.size.width >= 650
+        let panelWidth = isWide ? min(400, proxy.size.width * 0.48) : CGFloat.infinity
 
         return VStack(spacing: 0) {
-            gripHandle
-                .contentShape(Rectangle())
-                .simultaneousGesture(dragGesture(in: proxy))
+            if isTiled {
+                sheetHeading
+                    .padding(.top, 16)
+            } else {
+                gripHandle
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(dragGesture(in: proxy))
+            }
 
             ZStack {
                 // Keep section expansion and scroll state alive while the peek
@@ -120,9 +99,10 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
                         }
                         .id("map-sheet-top")
                         .padding(.horizontal, 10)
-                        .padding(.bottom, safeBottom + 10)
+                        .padding(.bottom, 16)
                     }
                     .scrollEdgeEffectStyle(.soft, for: .top)
+                    .scrollDismissesKeyboard(.interactively)
                     .refreshable { await onRefresh() }
                     .task(id: presentation.revealID) {
                         await Task.yield()
@@ -135,11 +115,11 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
                         }
                     }
                 }
-                .opacity(detent == .collapsed ? 0 : 1)
-                .allowsHitTesting(detent != .collapsed)
-                .accessibilityHidden(detent == .collapsed)
+                .opacity(showsPeek ? 0 : 1)
+                .allowsHitTesting(!showsPeek)
+                .accessibilityHidden(showsPeek)
 
-                if detent == .collapsed {
+                if showsPeek {
                     ScrollView(showsIndicators: false) {
                         peekContent
                             .padding(.horizontal, 18)
@@ -158,11 +138,19 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: height(in: proxy), alignment: .top)
+        .frame(height: isTiled ? nil : height(in: proxy), alignment: .top)
+        .frame(maxHeight: isTiled ? .infinity : nil, alignment: .top)
+        .background {
+            if isTiled {
+                RoundedRectangle(cornerRadius: 30)
+                    .fill(palette.screenBackground)
+            }
+        }
         .glassEffect(.regular, in: .rect(cornerRadius: 30))
-        .padding(.horizontal, 8)
-        .padding(.bottom, 8)
-        .animation(sheetAnimation, value: detent)
+        .padding(8)
+        .frame(maxWidth: isTiled ? .infinity : panelWidth)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        .animation(isTiled ? nil : sheetAnimation, value: detent)
         .transaction { transaction in
             if isDragging { transaction.animation = nil }
         }
@@ -217,29 +205,45 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
 
     private var sheetHeading: some View {
         VStack(spacing: 10) {
-            HStack(alignment: .center, spacing: 8) {
-                Text(title)
-                    .font(.transitBody)
-                    .foregroundStyle(palette.accentText)
-
-                Spacer()
-
-                if isLoading {
-                    ProgressView()
-                        .scaleEffect(0.8)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 8) {
+                    headingTitle.fixedSize()
+                    Spacer(minLength: 8)
+                    headingSummary.fixedSize()
                 }
-
-                Text(summary)
-                    .font(.transitBadge)
-                    .foregroundStyle(palette.textSecondary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(palette.surfaceRaised.opacity(0.8), in: Capsule())
+                VStack(alignment: .leading, spacing: 6) {
+                    headingTitle
+                    headingSummary
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 18)
 
             Divider()
                 .padding(.horizontal, 18)
+        }
+    }
+
+    private var headingTitle: some View {
+        Text(title)
+            .font(.transitHeadline)
+            .foregroundStyle(palette.accentText)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private var headingSummary: some View {
+        HStack(spacing: 8) {
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Text(summary)
+                .font(.transitBadge)
+                .foregroundStyle(palette.textSecondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(palette.surfaceRaised.opacity(0.8), in: Capsule())
         }
     }
 
@@ -276,12 +280,12 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
     }
 
     private func detentHeights(in proxy: GeometryProxy) -> [MapSheetPresentation.Detent: CGFloat] {
-        let safeTop = max(proxy.safeAreaInsets.top, 12)
-        let availableHeight = max(0, proxy.size.height - safeTop - 18)
+        let availableHeight = max(0, proxy.size.height - 20)
         let expanded = min(availableHeight, proxy.size.height * 0.88)
         let maximumPeekHeight = min(expanded, max(88, expanded * 0.65))
         let collapsed = min(max(88, peekContentHeight + 44), maximumPeekHeight)
-        let medium = min(max(collapsed, max(360, proxy.size.height * 0.47)), expanded)
+        let mediumFraction = proxy.size.width >= 650 ? 0.68 : 0.5
+        let medium = max(collapsed, min(proxy.size.height * mediumFraction, expanded))
 
         return [
             .collapsed: collapsed,
@@ -331,6 +335,16 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
             presentation.detent = newDetent
             dragTranslation = 0
         }
+    }
+}
+
+@available(iOS 27.1, *)
+private struct DepartureArrangementPanel<Content: View>: View {
+    @Environment(\.overlayArrangementZIndex) private var overlayZIndex
+    @ViewBuilder let content: (Bool) -> Content
+
+    var body: some View {
+        content(overlayZIndex == 0)
     }
 }
 

@@ -5,7 +5,6 @@ import SwiftUI
 struct BusMapExplorerView: View {
     let provider: BusProvider
     let initialBusInfo: BusInfo?
-    let onOpenSettings: () -> Void
     let onRefresh: () async -> Void
     let autoRefreshEnabled: Bool
     let statusMessage: String?
@@ -19,7 +18,6 @@ struct BusMapExplorerView: View {
     @State private var favouriteBusInfo: BusInfo
     @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var selectedStopID: String?
-    @State private var mapCenter: CLLocationCoordinate2D?
     @State private var lastQueriedCenter: CLLocationCoordinate2D?
     @State private var userCoordinate: CLLocationCoordinate2D?
     @State private var reloadTask: Task<Void, Never>?
@@ -42,7 +40,6 @@ struct BusMapExplorerView: View {
     init(
         provider: BusProvider,
         initialBusInfo: BusInfo? = nil,
-        onOpenSettings: @escaping () -> Void = {},
         onRefresh: @escaping () async -> Void = {},
         autoRefreshEnabled: Bool = true,
         statusMessage: String? = nil,
@@ -52,7 +49,6 @@ struct BusMapExplorerView: View {
     ) {
         self.provider = provider
         self.initialBusInfo = initialBusInfo
-        self.onOpenSettings = onOpenSettings
         self.onRefresh = onRefresh
         self.autoRefreshEnabled = autoRefreshEnabled
         self.statusMessage = statusMessage
@@ -62,10 +58,6 @@ struct BusMapExplorerView: View {
         let seed = initialBusInfo ?? .placeholder(provider: provider)
         _nearbyBusInfo = State(initialValue: seed)
         _favouriteBusInfo = State(initialValue: seed)
-    }
-
-    private var searchCenter: CLLocationCoordinate2D? {
-        mapCenter ?? lastQueriedCenter
     }
 
     private var normalizedRouteSearchText: String {
@@ -138,10 +130,9 @@ struct BusMapExplorerView: View {
 
     var body: some View {
         MapSheetScaffold(
-            title: "Nearby \(provider.stopsTitle)",
+            title: "Departures",
             summary: mapSummary,
             isLoading: isLoading,
-            onOpenSettings: onOpenSettings,
             onRecenter: recenterOnUser,
             onRefresh: { await refreshAll() },
             presentation: sheetPresentation,
@@ -202,8 +193,8 @@ struct BusMapExplorerView: View {
                     .stroke(palette.info, lineWidth: 5)
             }
 
-            if let searchCenter {
-                MapCircle(center: searchCenter, radius: 300)
+            if let lastQueriedCenter {
+                MapCircle(center: lastQueriedCenter, radius: 300)
                     .foregroundStyle(palette.accent.opacity(0.12))
                     .stroke(palette.accentStrong.opacity(0.28), lineWidth: 1.5)
             }
@@ -244,12 +235,18 @@ struct BusMapExplorerView: View {
         }
         .mapStyle(.standard(elevation: .realistic))
         .onMapCameraChange(frequency: .onEnd) { context in
-            let center = context.region.center
-            mapCenter = center
-            currentRegion = context.region
+            let region = context.region
+            // MapKit can report the same camera after re-laying out its overlays.
+            if let currentRegion,
+               region.center.distance(to: currentRegion.center) < 1,
+               abs(region.span.latitudeDelta - currentRegion.span.latitudeDelta) < 0.000_01,
+               abs(region.span.longitudeDelta - currentRegion.span.longitudeDelta) < 0.000_01 {
+                return
+            }
+            currentRegion = region
 
             guard hasBootstrapped else { return }
-            scheduleReload(around: center)
+            scheduleReload(around: region.center)
         }
     }
 
@@ -481,7 +478,6 @@ struct BusMapExplorerView: View {
             let location = try await LocationManager().currentLocation()
             let coordinate = location.coordinate
             userCoordinate = coordinate
-            mapCenter = coordinate
             let initialRegion = MKCoordinateRegion(
                 center: coordinate,
                 span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
@@ -524,7 +520,7 @@ struct BusMapExplorerView: View {
     private func refreshAll() async {
         await onRefresh()
 
-        if let coordinate = mapCenter ?? lastQueriedCenter ?? userCoordinate {
+        if let coordinate = currentRegion?.center ?? lastQueriedCenter ?? userCoordinate {
             await reloadBoard(around: coordinate)
         }
         await refreshLiveVehicles()

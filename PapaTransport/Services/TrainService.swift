@@ -22,6 +22,19 @@ final class TrainService {
 
     // MARK: - Public API
 
+    func fetchTrainLines() async throws -> [TrainLineDescriptor] {
+        let (statusData, _) = try await URLSession.shared.data(from: statusURL)
+        let allLines = try JSONDecoder().decode(WebsiteDataResponse.self, from: statusData)
+
+        return allLines.lines
+            .compactMap { line in
+                let name = line.data.lineName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty else { return nil }
+                return TrainLineDescriptor(id: line.lineId, name: name)
+            }
+            .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+    }
+
     func fetchTrainInfo(lineName: String) async throws -> TrainInfo {
         // Trim whitespace/newlines that can sneak in from the Settings keyboard.
         let lineName = lineName.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -23,12 +23,12 @@ struct TrainLinePickerView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var lines: [(id: String, name: String)] = []
+    @State private var lines: [TrainLineDescriptor] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var searchText = ""
 
-    private var filteredLines: [(id: String, name: String)] {
+    private var filteredLines: [TrainLineDescriptor] {
         if searchText.isEmpty { return lines }
         return lines.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
@@ -90,14 +90,7 @@ struct TrainLinePickerView: View {
         errorMessage = nil
 
         do {
-            let url = URL(string: "https://747813379903-static-assets-production.s3-ap-southeast-2.amazonaws.com/website_data.json")!
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let response = try JSONDecoder().decode(WebsiteDataResponse.self, from: data)
-
-            let parsed = response.lines
-                .filter { !$0.data.lineName.isEmpty }
-                .map { (id: $0.lineId, name: $0.data.lineName) }
-                .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+            let parsed = try await TrainService.shared.fetchTrainLines()
 
             await MainActor.run {
                 lines = parsed
