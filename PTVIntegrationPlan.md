@@ -363,13 +363,17 @@ path — PTV has no journey-planner endpoint, and every planner query traversed
 It has been replaced by **Plan Lite** (`PlanLiteService` + a rewritten
 `RoutePlannerView`), which uses MapKit and needs no bundled data:
 
-- Transit / walking / driving estimates fetched concurrently for a tapped
-  origin and destination.
+- The **From** and **To** fields each offer Current Location and Apple Maps
+  suggestions for street addresses and places of interest. Search uses the
+  visible map as a geographic hint. You can also place either pin on the map.
+- Transit / walking / driving estimates are fetched concurrently from the
+  selected coordinates.
 - Walking and driving routes are drawn on the map; **transit shows an ETA
   only**, because `MKDirections.calculate()` with `.transit` always fails with
   `MKError.directionsNotFound` (verified). `calculateETA()` does work.
-- "Open in Apple Maps" hands off the step-by-step itinerary, including which
-  services to catch.
+- "Open in Apple Maps" passes the selected endpoints and travel mode to Apple
+  Maps for the step-by-step itinerary, including which services to catch. It is
+  available as soon as both endpoints are set.
 
 Measured live:
 

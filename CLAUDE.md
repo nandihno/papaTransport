@@ -265,7 +265,7 @@ Train stops in the SEQ GTFS database have `route_type = -1` in the stops table. 
   work survives insignificant camera changes. Train regional rows
   publish before favourites and refresh alongside general line status.
 
-- **Plan Lite**: `PlanLiteService` + `RoutePlannerView`. MapKit-based trip estimates with no bundled data. Note that `MKDirections.calculate()` never returns a transit route — only `calculateETA()` works for transit, so the itinerary is handed off to Apple Maps.
+- **Plan Lite**: `PlanLiteService` + `RoutePlannerView`. MapKit-based trip estimates with no bundled data. The planner uses the same `MapSheetScaffold` as the departure tabs and collapses to **Show trip planner**. `RouteEndpointPicker` resolves address and place suggestions to `MKMapItem` and uses the existing one-shot location manager for Current Location. Either endpoint can also be placed on the map. Plan Lite uses `calculateETA()` for transit and passes the selected map items to Apple Maps for the itinerary.
 - **PTV Timetable API**: `PTVIntegrationPlan.md` at repo root. Read this before touching anything under `Services/PTV/`. Covers the signing scheme, the feature flags, and what PTV can and cannot replace.
 
 ---

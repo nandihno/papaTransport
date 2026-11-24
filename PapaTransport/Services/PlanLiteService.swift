@@ -107,17 +107,12 @@ final class PlanLiteService {
 
     @MainActor
     func openInAppleMaps(
-        from origin: CLLocationCoordinate2D,
-        to destination: CLLocationCoordinate2D,
+        from origin: MKMapItem,
+        to destination: MKMapItem,
         mode: PlanLiteMode
     ) {
-        let source = MKMapItem(placemark: MKPlacemark(coordinate: origin))
-        source.name = "Start"
-        let target = MKMapItem(placemark: MKPlacemark(coordinate: destination))
-        target.name = "Destination"
-
         MKMapItem.openMaps(
-            with: [source, target],
+            with: [origin, destination],
             launchOptions: [MKLaunchOptionsDirectionsModeKey: mode.launchOptionsMode]
         )
     }
@@ -129,8 +124,14 @@ final class PlanLiteService {
     ) async -> PlanLiteLeg? {
         func request() -> MKDirections.Request {
             let request = MKDirections.Request()
-            request.source = MKMapItem(placemark: MKPlacemark(coordinate: origin))
-            request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destination))
+            request.source = MKMapItem(
+                location: CLLocation(latitude: origin.latitude, longitude: origin.longitude),
+                address: nil
+            )
+            request.destination = MKMapItem(
+                location: CLLocation(latitude: destination.latitude, longitude: destination.longitude),
+                address: nil
+            )
             request.transportType = mode.transportType
             return request
         }

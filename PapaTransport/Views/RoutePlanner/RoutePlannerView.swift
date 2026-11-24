@@ -2,9 +2,18 @@ import CoreLocation
 import MapKit
 import SwiftUI
 
-private enum RoutePlanPointMode: String, CaseIterable {
+private enum RoutePlanPointMode: String, CaseIterable, Identifiable {
     case origin = "From"
     case destination = "To"
+
+    var id: Self { self }
+
+    var symbol: String {
+        switch self {
+        case .origin: "smallcircle.filled.circle"
+        case .destination: "flag.fill"
+        }
+    }
 }
 
 /// Lightweight trip planner backed by MapKit rather than bundled timetable data.
@@ -15,17 +24,18 @@ private enum RoutePlanPointMode: String, CaseIterable {
 /// database and works in every region.
 struct RoutePlannerView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.themePalette) private var palette
 
     @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
+    @State private var visibleRegion: MKCoordinateRegion?
+    @State private var sheetPresentation = MapSheetPresentation()
     @State private var selectedPointMode: RoutePlanPointMode = .origin
-    @State private var originCoordinate: CLLocationCoordinate2D?
-    @State private var destinationCoordinate: CLLocationCoordinate2D?
+    @State private var editingPoint: RoutePlanPointMode?
+    @State private var origin: RouteEndpoint?
+    @State private var destination: RouteEndpoint?
     @State private var result: PlanLiteResult?
     @State private var selectedMode: PlanLiteMode = .transit
     @State private var isPlanning = false
-    @State private var errorMessage: String?
     @State private var planTask: Task<Void, Never>?
 
     private var selectedLeg: PlanLiteLeg? {
@@ -38,39 +48,36 @@ struct RoutePlannerView: View {
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            if #available(iOS 27.1, *),
-               horizontalSizeClass == .regular || !proxy.reservedRegions(kind: .division).isEmpty {
-                ArrangementView {
-                    mapView
-                } secondary: {
-                    plannerPanel
-                        .splitArrangementLayoutRatio(idealHorizontal: 0.44, idealVertical: 0.42)
-                }
-                .arrangementViewStyle(.split)
-            } else {
-                compactLayout(in: proxy.size)
+        MapSheetScaffold(
+            title: "Trip planner",
+            summary: isPlanning ? "Estimating…" : nil,
+            isLoading: isPlanning,
+            onRecenter: recenterOnUser,
+            presentation: sheetPresentation,
+            collapsedTitle: "Show trip planner"
+        ) {
+            mapView
+        } headerContent: {
+            Text(selectedPointMode == .origin
+                 ? "Tap the map to place the starting pin."
+                 : "Tap the map to place the destination pin.")
+                .font(.transitCaption)
+                .foregroundStyle(palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } sheetContent: {
+            plannerSections
+        }
+        .sheet(item: $editingPoint) { point in
+            RouteEndpointPicker(field: point.rawValue, region: visibleRegion) { endpoint in
+                setPoint(endpoint, for: point)
+                frameSelectedPoints()
             }
+        }
+        .onAppear {
+            if isPlanning { planIfReady() }
         }
         .onDisappear {
             planTask?.cancel()
-        }
-    }
-
-    private func compactLayout(in size: CGSize) -> some View {
-        let sideBySide = size.width >= 520 && size.width > size.height
-        let layout = sideBySide
-            ? AnyLayout(HStackLayout(spacing: 0))
-            : AnyLayout(VStackLayout(spacing: 0))
-
-        return layout {
-            mapView
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            plannerPanel
-                .frame(
-                    width: sideBySide ? min(size.width * 0.44, 420) : nil,
-                    height: sideBySide ? nil : size.height * 0.43
-                )
         }
     }
 
@@ -89,22 +96,25 @@ struct RoutePlannerView: View {
                         )
                 }
 
-                if let originCoordinate {
-                    Marker("From", systemImage: "smallcircle.filled.circle", coordinate: originCoordinate)
+                if let origin {
+                    Marker("From", systemImage: RoutePlanPointMode.origin.symbol, coordinate: origin.coordinate)
                         .tint(palette.success)
                 }
 
-                if let destinationCoordinate {
-                    Marker("To", systemImage: "flag.fill", coordinate: destinationCoordinate)
+                if let destination {
+                    Marker("To", systemImage: RoutePlanPointMode.destination.symbol, coordinate: destination.coordinate)
                         .tint(palette.danger)
                 }
             }
             .mapStyle(.standard(elevation: .realistic))
+            .onMapCameraChange(frequency: .onEnd) { context in
+                visibleRegion = context.region
+            }
             .simultaneousGesture(
                 SpatialTapGesture()
                     .onEnded { value in
                         guard let coordinate = reader.convert(value.location, from: .local) else { return }
-                        setSelectedPoint(coordinate)
+                        setPoint(.pin(at: coordinate, title: "Dropped Pin"), for: selectedPointMode)
                     }
             )
         }
@@ -112,108 +122,106 @@ struct RoutePlannerView: View {
 
     // MARK: - Planner panel
 
-    private var plannerPanel: some View {
-        let headerLayout = dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-            : AnyLayout(HStackLayout(spacing: 8))
-
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                headerLayout {
-                    Label("Trip endpoints", systemImage: "map.fill")
-                        .font(.transitHeadline)
-                        .foregroundStyle(palette.accentText)
-                        .accessibilityAddTraits(.isHeader)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    HStack(spacing: 8) {
-                        Button("Use current location", systemImage: "location.fill") {
-                            useCurrentLocationAsOrigin()
-                        }
-                        .labelStyle(.iconOnly)
-
-                        Button("Clear trip", systemImage: "arrow.counterclockwise") {
-                            resetPlan()
-                        }
-                        .labelStyle(.iconOnly)
-                        .disabled(originCoordinate == nil && destinationCoordinate == nil && errorMessage == nil)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                }
-
-                Picker("Point", selection: $selectedPointMode) {
-                    ForEach(RoutePlanPointMode.allCases, id: \.self) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Text(instructionText)
-                    .font(.transitCaption)
-                    .foregroundStyle(palette.textSecondary)
-
-                statusContent
-                resultsContent
-            }
-            .padding(16)
-            .frame(maxWidth: 500, alignment: .leading)
-            .frame(maxWidth: .infinity)
+    @ViewBuilder
+    private var plannerSections: some View {
+        VStack(spacing: 0) {
+            endpointRow(.origin, endpoint: origin)
+            Divider()
+            endpointRow(.destination, endpoint: destination)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(palette.screenBackground)
+        .padding(12)
+        .background(palette.surfaceRaised.opacity(0.45), in: .rect(cornerRadius: 16))
+        .padding(.top, 10)
+
+        HStack(spacing: 10) {
+            Picker("Map pin", selection: $selectedPointMode) {
+                ForEach(RoutePlanPointMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Button("Clear trip", systemImage: "arrow.counterclockwise", action: resetPlan)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(origin == nil && destination == nil)
+        }
+
+        resultsContent
     }
 
-    private var instructionText: String {
-        switch selectedPointMode {
-        case .origin:
-            originCoordinate == nil ? "Tap the map to choose a starting point." : "Tap the map to move the starting point."
-        case .destination:
-            destinationCoordinate == nil ? "Tap the map to choose a destination." : "Tap the map to move the destination."
+    private func endpointRow(_ point: RoutePlanPointMode, endpoint: RouteEndpoint?) -> some View {
+        Button {
+            editingPoint = point
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: point.symbol)
+                    .foregroundStyle(point == .origin ? palette.success : palette.danger)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(point.rawValue)
+                        .font(.transitCaption)
+                        .foregroundStyle(palette.textSecondary)
+                    Text(endpoint?.title ?? "Choose a location")
+                        .font(.transitBody)
+                        .foregroundStyle(endpoint == nil ? palette.textSecondary : palette.textPrimary)
+                    if let subtitle = endpoint?.subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.transitCaption)
+                            .foregroundStyle(palette.textSecondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.right")
+                    .font(.transitCaption)
+                    .foregroundStyle(palette.textSecondary)
+                    .accessibilityHidden(true)
+            }
+            .frame(minHeight: 44)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(point == .origin ? "route.endpoint.from" : "route.endpoint.to")
     }
 
     @ViewBuilder
     private var resultsContent: some View {
-        if let result, !result.legs.isEmpty {
-            CardContainer {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Travel estimates")
-                        .font(.transitBody)
+        if let result {
+            if result.legs.isEmpty {
+                MapInfoBanner(
+                    title: "No estimate available for these points.",
+                    detail: nil,
+                    icon: "clock"
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Travel estimates", systemImage: "clock")
+                        .font(.transitHeadline)
+                        .foregroundStyle(palette.accentText)
                         .accessibilityAddTraits(.isHeader)
 
-                    ForEach(result.legs) { leg in
-                        modeRow(leg)
+                    VStack(spacing: 4) {
+                        ForEach(result.legs) { leg in
+                            modeRow(leg)
+                        }
                     }
+                    .padding(4)
+                    .background(palette.surfaceRaised.opacity(0.45), in: .rect(cornerRadius: 16))
                 }
             }
+        }
 
+        if origin != nil && destination != nil {
             Button("Open in Apple Maps", systemImage: "arrow.up.forward.app") {
                 openInMaps()
             }
             .buttonStyle(TransitPrimaryButtonStyle())
 
             Text("Apple Maps has the step-by-step route, including which services to catch.")
-                .font(.transitCaption)
-                .foregroundStyle(palette.textSecondary)
-        }
-    }
-
-    @ViewBuilder
-    private var statusContent: some View {
-        if isPlanning {
-            HStack(spacing: 8) {
-                ProgressView()
-                Text("Estimating…")
-                    .font(.transitCaption)
-                    .foregroundStyle(palette.textSecondary)
-            }
-        } else if let errorMessage {
-            Text(errorMessage)
-                .font(.transitCaption)
-                .foregroundStyle(palette.warning)
-        } else if result?.legs.isEmpty ?? false {
-            Text("No estimate available for these points.")
                 .font(.transitCaption)
                 .foregroundStyle(palette.textSecondary)
         }
@@ -267,56 +275,37 @@ struct RoutePlannerView: View {
 
     // MARK: - Actions
 
-    private func setSelectedPoint(_ coordinate: CLLocationCoordinate2D) {
-        switch selectedPointMode {
+    private func setPoint(_ endpoint: RouteEndpoint, for point: RoutePlanPointMode) {
+        switch point {
         case .origin:
-            originCoordinate = coordinate
-            if destinationCoordinate == nil { selectedPointMode = .destination }
+            origin = endpoint
+            if destination == nil { selectedPointMode = .destination }
         case .destination:
-            destinationCoordinate = coordinate
-            if originCoordinate == nil { selectedPointMode = .origin }
+            destination = endpoint
+            if origin == nil { selectedPointMode = .origin }
         }
         planIfReady()
     }
 
-    private func useCurrentLocationAsOrigin() {
-        Task {
-            guard let location = try? await LocationManager().currentLocation() else {
-                errorMessage = "Could not get your current location."
-                return
-            }
-            originCoordinate = location.coordinate
-            if destinationCoordinate == nil { selectedPointMode = .destination }
-            cameraPosition = .region(
-                MKCoordinateRegion(
-                    center: location.coordinate,
-                    span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-                )
-            )
-            planIfReady()
-        }
-    }
-
     private func resetPlan() {
         planTask?.cancel()
-        originCoordinate = nil
-        destinationCoordinate = nil
+        origin = nil
+        destination = nil
         result = nil
-        errorMessage = nil
         isPlanning = false
         selectedPointMode = .origin
     }
 
     private func planIfReady() {
-        guard let originCoordinate, let destinationCoordinate else { return }
+        guard let origin, let destination else { return }
         planTask?.cancel()
-        errorMessage = nil
+        result = nil
         isPlanning = true
 
         planTask = Task {
             let planned = await PlanLiteService.shared.plan(
-                from: originCoordinate,
-                to: destinationCoordinate
+                from: origin.coordinate,
+                to: destination.coordinate
             )
             guard !Task.isCancelled else { return }
             result = planned
@@ -335,26 +324,36 @@ struct RoutePlannerView: View {
     }
 
     private func openInMaps() {
-        guard let originCoordinate, let destinationCoordinate else { return }
+        guard let origin, let destination else { return }
         PlanLiteService.shared.openInAppleMaps(
-            from: originCoordinate,
-            to: destinationCoordinate,
+            from: origin.mapItem,
+            to: destination.mapItem,
             mode: selectedMode
         )
     }
 
     // MARK: - Camera
 
+    private func recenterOnUser() {
+        Task {
+            if let location = try? await LocationManager().currentLocation() {
+                cameraPosition = .region(region(containing: [location.coordinate]))
+            } else {
+                cameraPosition = .userLocation(fallback: .automatic)
+            }
+        }
+    }
+
     private func frameRoute(_ leg: PlanLiteLeg) {
         let coordinates = leg.isDrawable
             ? leg.coordinates
-            : [originCoordinate, destinationCoordinate].compactMap { $0 }
+            : [origin?.coordinate, destination?.coordinate].compactMap { $0 }
         guard !coordinates.isEmpty else { return }
         cameraPosition = .region(region(containing: coordinates))
     }
 
     private func frameSelectedPoints() {
-        let coordinates = [originCoordinate, destinationCoordinate].compactMap { $0 }
+        let coordinates = [origin?.coordinate, destination?.coordinate].compactMap { $0 }
         guard !coordinates.isEmpty else { return }
         cameraPosition = .region(region(containing: coordinates))
     }

@@ -1,15 +1,17 @@
 import SwiftUI
 
-/// The nonmodal map and departures board shared by the bus, train and tram tabs.
+/// The nonmodal map and floating sheet shared by the transport tabs.
 struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: View>: View {
     let title: String
-    let summary: String
+    var summary: String? = nil
     let isLoading: Bool
     let onRecenter: () -> Void
-    let onRefresh: () async -> Void
+    var onRefresh: (() async -> Void)? = nil
     let presentation: MapSheetPresentation
     var departureListFocusID: String? = nil
     var peekDeparture: MapPeekDeparture? = nil
+    /// Sheets without a departure preview collapse to this button alone.
+    var collapsedTitle: String? = nil
 
     @ViewBuilder var mapContent: MapContent
     @ViewBuilder var headerContent: HeaderContent
@@ -27,8 +29,8 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
         GeometryReader { proxy in
             if #available(iOS 27.1, *) {
                 ArrangementView {
-                    DepartureArrangementPanel { isTiled in
-                        departurePanel(proxy: proxy, isTiled: isTiled)
+                    MapArrangementPanel { isTiled in
+                        sheetPanel(proxy: proxy, isTiled: isTiled)
                     }
                     .overlayArrangementEdge(HorizontalEdge.leading)
                     .overlayArrangementEdge(VerticalEdge.bottom)
@@ -39,7 +41,7 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
             } else {
                 ZStack(alignment: .bottomLeading) {
                     mapPane
-                    departurePanel(proxy: proxy, isTiled: false)
+                    sheetPanel(proxy: proxy, isTiled: false)
                 }
             }
         }
@@ -74,8 +76,8 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
 
     // MARK: - Sheet
 
-    private func departurePanel(proxy: GeometryProxy, isTiled: Bool) -> some View {
-        let showsPeek = !isTiled && detent == .collapsed
+    private func sheetPanel(proxy: GeometryProxy, isTiled: Bool) -> some View {
+        let isCollapsed = !isTiled && detent == .collapsed
         let isWide = proxy.size.width >= 650
         let panelWidth = isWide ? min(400, proxy.size.width * 0.48) : CGFloat.infinity
 
@@ -93,17 +95,7 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
                 // Keep section expansion and scroll state alive while the peek
                 // replaces the visible list.
                 ScrollViewReader { reader in
-                    ScrollView(showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 16) {
-                            sheetContent
-                        }
-                        .id("map-sheet-top")
-                        .padding(.horizontal, 10)
-                        .padding(.bottom, 16)
-                    }
-                    .scrollEdgeEffectStyle(.soft, for: .top)
-                    .scrollDismissesKeyboard(.interactively)
-                    .refreshable { await onRefresh() }
+                    sheetScrollView
                     .task(id: presentation.revealID) {
                         await Task.yield()
                         guard !Task.isCancelled else { return }
@@ -115,11 +107,11 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
                         }
                     }
                 }
-                .opacity(showsPeek ? 0 : 1)
-                .allowsHitTesting(!showsPeek)
-                .accessibilityHidden(showsPeek)
+                .opacity(isCollapsed ? 0 : 1)
+                .allowsHitTesting(!isCollapsed)
+                .accessibilityHidden(isCollapsed)
 
-                if showsPeek {
+                if isCollapsed && collapsedTitle == nil {
                     ScrollView(showsIndicators: false) {
                         peekContent
                             .padding(.horizontal, 18)
@@ -156,16 +148,48 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
         }
     }
 
+    @ViewBuilder
+    private var sheetScrollView: some View {
+        let scrollView = ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 16) {
+                sheetContent
+            }
+            .id("map-sheet-top")
+            .padding(.horizontal, 10)
+            .padding(.bottom, 16)
+        }
+        .scrollEdgeEffectStyle(.soft, for: .top)
+        .scrollDismissesKeyboard(.interactively)
+
+        if let onRefresh {
+            scrollView.refreshable { await onRefresh() }
+        } else {
+            scrollView
+        }
+    }
+
     private var gripHandle: some View {
-        VStack(spacing: 10) {
+        let isCollapsed = detent == .collapsed
+        let showsDepartures = collapsedTitle == nil
+        let expandTitle = collapsedTitle ?? "Show departures"
+        let sheetLabel = showsDepartures ? "Departure sheet" : title
+        let expandHint = showsDepartures ? "Expands the departure list." : "Expands the planner."
+        let collapseHint = showsDepartures ? "Shows just the next departure." : "Collapses the planner."
+
+        return VStack(spacing: 10) {
             Button {
-                if detent == .collapsed { presentation.showDepartures(at: departureListFocusID) }
-                else { setDetent(.collapsed) }
+                if !isCollapsed {
+                    setDetent(.collapsed)
+                } else if showsDepartures {
+                    presentation.showDepartures(at: departureListFocusID)
+                } else {
+                    setDetent(.medium)
+                }
             } label: {
                 Group {
-                    if detent == .collapsed {
+                    if isCollapsed {
                         HStack(spacing: 8) {
-                            Text("Show departures")
+                            Text(expandTitle)
                                 .lineLimit(1)
                             Image(systemName: "chevron.up")
                         }
@@ -183,9 +207,9 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(detent == .collapsed ? "Show departures" : "Departure sheet")
-            .accessibilityValue(detent.accessibilityDescription)
-            .accessibilityHint(detent == .collapsed ? "Expands the departure list." : "Shows just the next departure.")
+            .accessibilityLabel(isCollapsed ? expandTitle : sheetLabel)
+            .accessibilityValue(isCollapsed && !showsDepartures ? "Collapsed" : detent.accessibilityDescription)
+            .accessibilityHint(isCollapsed ? expandHint : collapseHint)
             .accessibilityAdjustableAction { direction in
                 switch direction {
                 case .increment:
@@ -197,7 +221,7 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
                 }
             }
 
-            if detent != .collapsed {
+            if !isCollapsed {
                 sheetHeading
             }
         }
@@ -238,12 +262,14 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
                     .controlSize(.small)
             }
 
-            Text(summary)
-                .font(.transitBadge)
-                .foregroundStyle(palette.textSecondary)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(palette.surfaceRaised.opacity(0.8), in: Capsule())
+            if let summary {
+                Text(summary)
+                    .font(.transitBadge)
+                    .foregroundStyle(palette.textSecondary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(palette.surfaceRaised.opacity(0.8), in: Capsule())
+            }
         }
     }
 
@@ -283,7 +309,9 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
         let availableHeight = max(0, proxy.size.height - 20)
         let expanded = min(availableHeight, proxy.size.height * 0.88)
         let maximumPeekHeight = min(expanded, max(88, expanded * 0.65))
-        let collapsed = min(max(88, peekContentHeight + 44), maximumPeekHeight)
+        let collapsed = collapsedTitle == nil
+            ? min(max(88, peekContentHeight + 44), maximumPeekHeight)
+            : min(expanded, 44)
         let mediumFraction = proxy.size.width >= 650 ? 0.68 : 0.5
         let medium = max(collapsed, min(proxy.size.height * mediumFraction, expanded))
 
@@ -339,7 +367,7 @@ struct MapSheetScaffold<MapContent: View, HeaderContent: View, SheetContent: Vie
 }
 
 @available(iOS 27.1, *)
-private struct DepartureArrangementPanel<Content: View>: View {
+private struct MapArrangementPanel<Content: View>: View {
     @Environment(\.overlayArrangementZIndex) private var overlayZIndex
     @ViewBuilder let content: (Bool) -> Content
 
